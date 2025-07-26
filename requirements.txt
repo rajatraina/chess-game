@@ -1,0 +1,4 @@
+python-chess
+Pillow
+pygame
+# tkinter is included with Python standard library 
