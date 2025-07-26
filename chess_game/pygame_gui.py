@@ -1,8 +1,10 @@
-import pygame
 import os
+os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+import pygame
 import chess
 import random
 from chess_game.board import ChessBoard
+from chess_game.engine import MinimaxEngine
 
 ASSET_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'pieces')
 
@@ -19,6 +21,7 @@ class PygameChessGUI:
         self.images = {}
         self.selected_square = None
         self.game_mode = "human_vs_computer"
+        self.engine = MinimaxEngine(depth=4)
         
         self.load_images()
         self.draw_board()
@@ -31,7 +34,6 @@ class PygameChessGUI:
             if os.path.exists(img_path):
                 img = pygame.image.load(img_path)
                 self.images[piece] = img  # Use native size
-                print(f"Loaded {piece}")
             else:
                 print(f"Image not found: {img_path}")
     
@@ -94,12 +96,10 @@ class PygameChessGUI:
         if self.game_mode in ["human_vs_computer", "computer_vs_human"]:
             chess_board = self.board.get_board()
             if not chess_board.is_game_over():
-                legal_moves = list(chess_board.legal_moves)
-                if legal_moves:
-                    move = random.choice(legal_moves)
+                move = self.engine.get_move(chess_board)
+                if move:
                     chess_board.push(move)
                     self.draw_board()
-                    
                     if chess_board.is_game_over():
                         self.show_game_over()
     
