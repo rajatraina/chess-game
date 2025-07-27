@@ -21,7 +21,7 @@ class PygameChessGUI:
         self.images = {}
         self.selected_square = None
         self.game_mode = "human_vs_computer"
-        self.engine = MinimaxEngine(depth=6)
+        self.engine = MinimaxEngine(depth=4)
         
         self.load_images()
         self.draw_board()

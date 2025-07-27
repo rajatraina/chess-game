@@ -54,12 +54,15 @@ class MinimaxEngine(Engine):
         
         # Evaluate all legal moves
         for move in board.legal_moves:
+            # Get the SAN notation before making the move
+            move_san = board.san(move)
+            
             # Make the move on the board
             board.push(move)
             
             # Search the resulting position
             # Note: After board.push(move), board.turn has changed to the opponent
-            value, line = self._minimax(board, self.depth - 1, alpha, beta)
+            value, line = self._minimax(board, self.depth - 1, alpha, beta, [move_san])
             
             # Undo the move to restore the original board state
             board.pop()
@@ -103,7 +106,7 @@ class MinimaxEngine(Engine):
             print(f"Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)}")
         return best_move
 
-    def _minimax(self, board, depth, alpha, beta):
+    def _minimax(self, board, depth, alpha, beta, variation=None):
         """
         Minimax search with alpha-beta pruning.
         
@@ -112,20 +115,27 @@ class MinimaxEngine(Engine):
             depth: Remaining search depth
             alpha: Alpha value for pruning (best score for maximizing player)
             beta: Beta value for pruning (best score for minimizing player)
+            variation: The sequence of moves that led to this position (for debugging)
             
         Returns:
             Tuple of (evaluation, principal_variation)
         """
+        # Initialize variation if None
+        if variation is None:
+            variation = []
+            
         # Debug: Print current position at leaf nodes
         if depth == 0:
             eval = self.evaluate(board)
-            print(f"  Leaf node eval: {eval} | Side: {'White' if board.turn else 'Black'}")
+            variation_str = " -> ".join(variation) if variation else "start"
+            print(f"  Leaf node eval: {eval} | Side: {'White' if board.turn else 'Black'} | Variation: {variation_str}")
             return self._quiescence(board, alpha, beta)
         
         # Base case: game over
         if board.is_game_over():
             eval = self.evaluate(board)
-            print(f"  Game over eval: {eval} | Side: {'White' if board.turn else 'Black'}")
+            variation_str = " -> ".join(variation) if variation else "start"
+            print(f"  Game over eval: {eval} | Side: {'White' if board.turn else 'Black'} | Variation: {variation_str}")
             return self._quiescence(board, alpha, beta)
         
         # White's turn: maximize evaluation
@@ -134,10 +144,13 @@ class MinimaxEngine(Engine):
             best_line = []
             
             for move in board.legal_moves:
+                # Get SAN notation before making the move
+                move_san = board.san(move)
+                
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line = self._minimax(board, depth - 1, alpha, beta)
+                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
                 
@@ -159,10 +172,13 @@ class MinimaxEngine(Engine):
             best_line = []
             
             for move in board.legal_moves:
+                # Get SAN notation before making the move
+                move_san = board.san(move)
+                
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line = self._minimax(board, depth - 1, alpha, beta)
+                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
                 
@@ -301,7 +317,11 @@ class MinimaxEngine(Engine):
                 value -= 100000
             else:  # Black is checkmated
                 value += 100000
-                
+        
+        # Add three-fold repetition detection (draw)
+        if board.is_repetition(3):
+            value = 0  # Draw by repetition
+            
         return value
 
     def _quiescence(self, board, alpha, beta, depth=0):
