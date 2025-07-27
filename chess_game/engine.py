@@ -2,10 +2,12 @@ import random
 import chess
 
 class Engine:
+    """Base class for chess engines"""
     def get_move(self, board):
         raise NotImplementedError
 
 class RandomEngine(Engine):
+    """Simple random move generator"""
     def get_move(self, board):
         legal_moves = list(board.legal_moves)
         if legal_moves:
@@ -13,25 +15,56 @@ class RandomEngine(Engine):
         return None
 
 class MinimaxEngine(Engine):
+    """
+    Chess engine using minimax search with alpha-beta pruning and quiescence search.
+    
+    Evaluation is always from White's perspective:
+    - Positive values = good for White
+    - Negative values = good for Black
+    
+    Search logic:
+    - White's turn: maximize evaluation (find best move for White)
+    - Black's turn: minimize evaluation (find best move for Black)
+    """
+    
     def __init__(self, depth=4):
         self.depth = depth
 
     def get_move(self, board):
+        """
+        Find the best move for the current side to move.
+        
+        Args:
+            board: Current chess board state
+            
+        Returns:
+            Best move found by the search
+        """
         import copy
         best_move = None
+        # Initialize best_value based on whose turn it is
+        # White wants to maximize (highest value), Black wants to minimize (lowest value)
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
         alpha = -float('inf')
         beta = float('inf')
         
         print(f"\nEngine thinking (depth {self.depth})...")
+        print(f"Current side to move: {'White' if board.turn else 'Black'}")
         
+        # Evaluate all legal moves
         for move in board.legal_moves:
+            # Make the move on the board
             board.push(move)
+            
+            # Search the resulting position
+            # Note: After board.push(move), board.turn has changed to the opponent
             value, line = self._minimax(board, self.depth - 1, alpha, beta)
+            
+            # Undo the move to restore the original board state
             board.pop()
             
-            # Print PV using a copy of the board
+            # Print the principal variation (best line) for this move
             pv_board = board.copy()
             pv_moves = [move] + line
             pv_san = []
@@ -43,19 +76,21 @@ class MinimaxEngine(Engine):
                     break
             print(f"  {pv_san[0]}: {value} | PV: {' '.join(pv_san)}")
             
-            if board.turn:
+            # Update best move based on whose turn it is
+            if board.turn:  # White to move: pick highest evaluation
                 if value > best_value:
                     best_value = value
                     best_move = move
                     best_line = [move] + line
                 alpha = max(alpha, value)
-            else:
+            else:  # Black to move: pick lowest evaluation
                 if value < best_value:
                     best_value = value
                     best_move = move
                     best_line = [move] + line
                 beta = min(beta, value)
         
+        # Print the best move found
         if best_move:
             pv_board = board.copy()
             pv_san = []
@@ -69,39 +104,95 @@ class MinimaxEngine(Engine):
         return best_move
 
     def _minimax(self, board, depth, alpha, beta):
-        if depth == 0 or board.is_game_over():
+        """
+        Minimax search with alpha-beta pruning.
+        
+        Args:
+            board: Current board state
+            depth: Remaining search depth
+            alpha: Alpha value for pruning (best score for maximizing player)
+            beta: Beta value for pruning (best score for minimizing player)
+            
+        Returns:
+            Tuple of (evaluation, principal_variation)
+        """
+        # Debug: Print current position at leaf nodes
+        if depth == 0:
+            eval = self.evaluate(board)
+            print(f"  Leaf node eval: {eval} | Side: {'White' if board.turn else 'Black'}")
             return self._quiescence(board, alpha, beta)
-        if board.turn:  # White to move: maximize
+        
+        # Base case: game over
+        if board.is_game_over():
+            eval = self.evaluate(board)
+            print(f"  Game over eval: {eval} | Side: {'White' if board.turn else 'Black'}")
+            return self._quiescence(board, alpha, beta)
+        
+        # White's turn: maximize evaluation
+        if board.turn:
             max_eval = -float('inf')
             best_line = []
+            
             for move in board.legal_moves:
+                # Make move
                 board.push(move)
+                # Recursively search the resulting position
                 eval, line = self._minimax(board, depth - 1, alpha, beta)
+                # Undo move
                 board.pop()
+                
+                # Update best move if this is better
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
+                
+                # Alpha-beta pruning
                 alpha = max(alpha, eval)
                 if beta <= alpha:
-                    break
+                    break  # Beta cutoff
+                    
             return max_eval, best_line
-        else:  # Black to move: minimize
+            
+        # Black's turn: minimize evaluation
+        else:
             min_eval = float('inf')
             best_line = []
+            
             for move in board.legal_moves:
+                # Make move
                 board.push(move)
+                # Recursively search the resulting position
                 eval, line = self._minimax(board, depth - 1, alpha, beta)
+                # Undo move
                 board.pop()
+                
+                # Update best move if this is better
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move] + line
+                
+                # Alpha-beta pruning
                 beta = min(beta, eval)
                 if beta <= alpha:
-                    break
+                    break  # Alpha cutoff
+                    
             return min_eval, best_line
 
     def evaluate(self, board):
-        # Material values
+        """
+        Evaluate the current board position.
+        
+        Evaluation is always from White's perspective:
+        - Positive = good for White
+        - Negative = good for Black
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Evaluation score
+        """
+        # Material values (from White's perspective)
         piece_values = {
             chess.PAWN: 100,
             chess.KNIGHT: 320,
@@ -110,7 +201,9 @@ class MinimaxEngine(Engine):
             chess.QUEEN: 900,
             chess.KING: 20000
         }
-        # Piece-square tables (PSTs)
+        
+        # Piece-square tables (positional bonuses/penalties)
+        # Higher values = better squares for that piece
         pawn_table = [
             0, 0, 0, 0, 0, 0, 0, 0,
             2, 4, 4, -8, -8, 4, 4, 2,
@@ -179,34 +272,59 @@ class MinimaxEngine(Engine):
             chess.QUEEN: queen_table,
             chess.KING: king_table
         }
-        # Material value
+        
+        # Calculate material value (primary factor)
         material_value = 0
         for piece_type in piece_values:
             white_count = len(board.pieces(piece_type, chess.WHITE))
             black_count = len(board.pieces(piece_type, chess.BLACK))
             material_value += white_count * piece_values[piece_type]
             material_value -= black_count * piece_values[piece_type]
-        # Positional value
+        
+        # Calculate positional value (secondary factor)
         positional_value = 0
         for piece_type in piece_values:
+            # Add positional bonuses for White pieces
             for square in board.pieces(piece_type, chess.WHITE):
                 positional_value += pst[piece_type][square]
+            # Subtract positional bonuses for Black pieces (mirror the board)
             for square in board.pieces(piece_type, chess.BLACK):
                 positional_value -= pst[piece_type][chess.square_mirror(square)]
-        # Combine
+        
+        # Combine material and positional values
+        # Positional value has small weight (0.1) compared to material
         value = material_value + 0.1 * positional_value
-        # Checkmate bonus
+        
+        # Add checkmate bonus/penalty
         if board.is_checkmate():
-            if board.turn:
+            if board.turn:  # White is checkmated
                 value -= 100000
-            else:
+            else:  # Black is checkmated
                 value += 100000
+                
         return value
 
     def _quiescence(self, board, alpha, beta, depth=0):
+        """
+        Quiescence search - continues searching only captures to avoid horizon effect.
+        
+        Args:
+            board: Current board state
+            alpha: Alpha value for pruning
+            beta: Beta value for pruning
+            depth: Current quiescence depth (to prevent infinite loops)
+            
+        Returns:
+            Tuple of (evaluation, principal_variation)
+        """
+        # Limit quiescence depth to prevent infinite loops
         if depth > 10:
             return self.evaluate(board), []
+            
+        # Evaluate current position (stand pat)
         stand_pat = self.evaluate(board)
+        
+        # Alpha-beta pruning at quiescence level
         if board.turn:  # White to move: maximize
             if stand_pat >= beta:
                 return beta, []
@@ -215,35 +333,59 @@ class MinimaxEngine(Engine):
             if stand_pat <= alpha:
                 return alpha, []
             beta = min(beta, stand_pat)
-        best_line = []
+        
+        # Only search captures
         captures = [move for move in board.legal_moves if board.is_capture(move)]
+        
+        # Sort captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+        # This improves move ordering and pruning efficiency
         captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
+        
+        best_line = []
         for move in captures:
+            # Make the capture
             board.push(move)
+            # Recursively search the resulting position
             score, line = self._quiescence(board, alpha, beta, depth + 1)
+            # Undo the capture
             board.pop()
+            
             if board.turn:  # White to move: maximize
                 if score > alpha:
                     alpha = score
                     best_line = [move] + line
                 if alpha >= beta:
-                    break
+                    break  # Beta cutoff
             else:  # Black to move: minimize
                 if score < beta:
                     beta = score
                     best_line = [move] + line
                 if beta <= alpha:
-                    break
+                    break  # Alpha cutoff
+        
         return (alpha, best_line) if board.turn else (beta, best_line)
     
     def _get_capture_value(self, board, move):
-        """Get the value of a capture move for MVV-LVA sorting"""
+        """
+        Calculate the value of a capture move for MVV-LVA sorting.
+        
+        MVV-LVA = Most Valuable Victim - Least Valuable Attacker
+        Higher values are searched first to improve pruning.
+        
+        Args:
+            board: Current board state
+            move: The capture move to evaluate
+            
+        Returns:
+            Capture value for sorting
+        """
         victim_piece = board.piece_at(move.to_square)
         attacker_piece = board.piece_at(move.from_square)
         
         if victim_piece is None or attacker_piece is None:
             return 0
         
+        # Piece values for MVV-LVA (different from evaluation values)
         piece_values = {
             chess.PAWN: 1,
             chess.KNIGHT: 2,
@@ -254,10 +396,20 @@ class MinimaxEngine(Engine):
         }
         
         # MVV-LVA: Most Valuable Victim - Least Valuable Attacker
-        return piece_values[victim_piece.piece_type] * 10 - piece_values[attacker_piece.piece_type] 
+        # Higher values = more promising captures
+        return piece_values[victim_piece.piece_type] * 10 - piece_values[attacker_piece.piece_type]
 
     def test_capture_evaluation(self, board, move):
-        """Test function to verify capture evaluation"""
+        """
+        Test function to verify capture evaluation.
+        
+        Args:
+            board: Current board state
+            move: The capture move to test
+            
+        Returns:
+            Evaluation after the capture
+        """
         print(f"\nTesting capture: {board.san(move)}")
         print(f"Board before move:")
         print(board)
@@ -299,10 +451,10 @@ class MinimaxEngine(Engine):
         print(f"Black pieces after: {black_pieces_after}")
         
         # Evaluate the position
-        eval_before = self.evaluate(board)
-        print(f"Evaluation after move: {eval_before}")
+        eval_after = self.evaluate(board)
+        print(f"Evaluation after move: {eval_after}")
         
         # Undo the move
         board.pop()
         
-        return eval_before 
+        return eval_after 
