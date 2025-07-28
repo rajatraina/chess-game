@@ -49,8 +49,8 @@ class MinimaxEngine(Engine):
         alpha = -float('inf')
         beta = float('inf')
         
-        print(f"\nEngine thinking (depth {self.depth})...")
-        print(f"Current side to move: {'White' if board.turn else 'Black'}")
+        print(f"\n🤔 Engine thinking (depth {self.depth})...")
+        print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
         
         # Evaluate all legal moves
         for move in board.legal_moves:
@@ -77,7 +77,7 @@ class MinimaxEngine(Engine):
                     pv_board.push(m)
                 except Exception:
                     break
-            print(f"  {pv_san[0]}: {value} | PV: {' '.join(pv_san)}")
+            print(f"  🎯 {pv_san[0]}: {value} | PV: {' '.join(pv_san)}")
             
             # Update best move based on whose turn it is
             if board.turn:  # White to move: pick highest evaluation
@@ -103,7 +103,7 @@ class MinimaxEngine(Engine):
                     pv_board.push(m)
                 except Exception:
                     break
-            print(f"Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)}")
+            print(f"🏆 Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)}")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
@@ -124,26 +124,33 @@ class MinimaxEngine(Engine):
         if variation is None:
             variation = []
             
-        # Debug: Print current position at leaf nodes
+        # Leaf node: evaluate position
         if depth == 0:
             eval = self.evaluate(board)
-            variation_str = " -> ".join(variation) if variation else "start"
-            print(f"  Leaf node eval: {eval} | Side: {'White' if board.turn else 'Black'} | Variation: {variation_str}")
             return self._quiescence(board, alpha, beta)
         
         # Base case: game over
         if board.is_game_over():
             eval = self.evaluate(board)
-            variation_str = " -> ".join(variation) if variation else "start"
-            print(f"  Game over eval: {eval} | Side: {'White' if board.turn else 'Black'} | Variation: {variation_str}")
             return self._quiescence(board, alpha, beta)
+        
+        # Sort moves to prioritize captures first
+        legal_moves = list(board.legal_moves)
+        captures = [move for move in legal_moves if board.is_capture(move)]
+        non_captures = [move for move in legal_moves if not board.is_capture(move)]
+        
+        # Sort captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+        captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
+        
+        # Combine captures first, then other moves
+        sorted_moves = captures + non_captures
         
         # White's turn: maximize evaluation
         if board.turn:
             max_eval = -float('inf')
             best_line = []
             
-            for move in board.legal_moves:
+            for move in sorted_moves:
                 # Get SAN notation before making the move
                 move_san = board.san(move)
                 
@@ -158,6 +165,10 @@ class MinimaxEngine(Engine):
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
+                    # Only print when we find a new best move! 🎯
+                    if depth == self.depth - 1:  # Only at top level
+                        variation_str = " -> ".join(variation + [move_san]) if variation else move_san
+                        print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 alpha = max(alpha, eval)
@@ -171,7 +182,7 @@ class MinimaxEngine(Engine):
             min_eval = float('inf')
             best_line = []
             
-            for move in board.legal_moves:
+            for move in sorted_moves:
                 # Get SAN notation before making the move
                 move_san = board.san(move)
                 
@@ -186,6 +197,10 @@ class MinimaxEngine(Engine):
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move] + line
+                    # Only print when we find a new best move! 🎯
+                    if depth == self.depth - 1:  # Only at top level
+                        variation_str = " -> ".join(variation + [move_san]) if variation else move_san
+                        print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 beta = min(beta, eval)
@@ -318,9 +333,14 @@ class MinimaxEngine(Engine):
             else:  # Black is checkmated
                 value += 100000
         
-        # Add three-fold repetition detection (draw)
+        # Three-fold repetition detection (draw)
         if board.is_repetition(3):
             value = 0  # Draw by repetition
+        
+        # Fifty-move rule detection
+        # If 50 moves have passed without pawn moves or captures, it's a draw
+        if board.halfmove_clock >= 100:  # 50 moves = 100 half-moves
+            value = 0  # Draw by fifty-move rule
             
         return value
 
@@ -430,8 +450,8 @@ class MinimaxEngine(Engine):
         Returns:
             Evaluation after the capture
         """
-        print(f"\nTesting capture: {board.san(move)}")
-        print(f"Board before move:")
+        print(f"\n🧪 Testing capture: {board.san(move)}")
+        print(f"📋 Board before move:")
         print(board)
         
         # Count pieces before
@@ -446,13 +466,13 @@ class MinimaxEngine(Engine):
                               chess.ROOK: len(board.pieces(chess.ROOK, chess.BLACK)),
                               chess.QUEEN: len(board.pieces(chess.QUEEN, chess.BLACK))}
         
-        print(f"White pieces before: {white_pieces_before}")
-        print(f"Black pieces before: {black_pieces_before}")
+        print(f"⚪ White pieces before: {white_pieces_before}")
+        print(f"⚫ Black pieces before: {black_pieces_before}")
         
         # Make the move
         board.push(move)
         
-        print(f"Board after move:")
+        print(f"📋 Board after move:")
         print(board)
         
         # Count pieces after
@@ -467,12 +487,12 @@ class MinimaxEngine(Engine):
                              chess.ROOK: len(board.pieces(chess.ROOK, chess.BLACK)),
                              chess.QUEEN: len(board.pieces(chess.QUEEN, chess.BLACK))}
         
-        print(f"White pieces after: {white_pieces_after}")
-        print(f"Black pieces after: {black_pieces_after}")
+        print(f"⚪ White pieces after: {white_pieces_after}")
+        print(f"⚫ Black pieces after: {black_pieces_after}")
         
         # Evaluate the position
         eval_after = self.evaluate(board)
-        print(f"Evaluation after move: {eval_after}")
+        print(f"📊 Evaluation after move: {eval_after}")
         
         # Undo the move
         board.pop()
