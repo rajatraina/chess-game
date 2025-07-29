@@ -37,6 +37,27 @@ class PygameChessGUI:
             else:
                 print(f"Image not found: {img_path}")
     
+    def setup_checkmate_defense_mode(self):
+        """Set up the board for checkmate defense mode: Human (White) has only King vs Computer (Black) with King and Queen"""
+        # Clear the board
+        self.board.reset()
+        chess_board = self.board.get_board()
+        
+        # Remove all pieces
+        for square in chess.SQUARES:
+            if chess_board.piece_at(square):
+                chess_board.remove_piece_at(square)
+        
+        # Place White King (Human) at e1
+        chess_board.set_piece_at(chess.E1, chess.Piece(chess.KING, chess.WHITE))
+        
+        # Place Black King at e8 and Black Queen at d8
+        chess_board.set_piece_at(chess.E8, chess.Piece(chess.KING, chess.BLACK))
+        chess_board.set_piece_at(chess.D8, chess.Piece(chess.QUEEN, chess.BLACK))
+        
+        print("♔ Checkmate Defense Mode: Human (White King) vs Computer (Black King + Queen)")
+        print("🎯 Goal: Try to avoid checkmate for as long as possible!")
+    
     def draw_board(self):
         # Draw board squares
         colors = [(240, 217, 181), (181, 136, 99)]  # Light and dark squares
@@ -93,7 +114,7 @@ class PygameChessGUI:
         return None
     
     def make_computer_move(self):
-        if self.game_mode in ["human_vs_computer", "computer_vs_human"]:
+        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense"]:
             chess_board = self.board.get_board()
             if not chess_board.is_game_over():
                 move = self.engine.get_move(chess_board)
@@ -113,6 +134,14 @@ class PygameChessGUI:
             message = "Draw!"
         
         print(f"Game Over: {message}")
+        
+        # Special message for checkmate defense mode
+        if self.game_mode == "checkmate_defense":
+            if result == "0-1":
+                print("💀 Checkmate! The computer found a way to checkmate you.")
+                print("🎯 Try again to see if you can survive longer!")
+            else:
+                print("🎉 Amazing! You survived the checkmate attempt!")
     
     def handle_click(self, pos):
         square = self.get_square_from_pos(pos)
@@ -138,7 +167,7 @@ class PygameChessGUI:
                     self.show_game_over()
                 else:
                     # Make computer move if in computer mode
-                    if self.game_mode in ["human_vs_computer", "computer_vs_human"]:
+                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense"]:
                         pygame.time.wait(500)
                         self.make_computer_move()
             else:
@@ -154,6 +183,11 @@ class PygameChessGUI:
     def new_game(self):
         self.board.reset()
         self.selected_square = None
+        
+        # Set up special board for checkmate defense mode
+        if self.game_mode == "checkmate_defense":
+            self.setup_checkmate_defense_mode()
+        
         self.draw_board()
         
         # If computer plays white, make first move
@@ -165,11 +199,28 @@ class PygameChessGUI:
         self.game_mode = mode
         self.new_game()
         print(f"Game mode set to: {mode}")
+        
+        # Print special instructions for checkmate defense mode
+        if mode == "checkmate_defense":
+            print("\n🎯 Checkmate Defense Mode Instructions:")
+            print("• You play as White with only a King")
+            print("• Computer plays as Black with King + Queen")
+            print("• Try to avoid checkmate for as long as possible!")
+            print("• Use your King to escape and avoid the Queen's attacks")
+            print("• The computer will try to checkmate you efficiently")
     
     def run(self):
-        running = True
-        clock = pygame.time.Clock()
+        print("Starting Pygame Chess...")
+        print("Controls:")
+        print("  Mouse: Click to select and move pieces")
+        print("  N: New game")
+        print("  1: Human vs Human")
+        print("  2: Human vs Computer")
+        print("  3: Computer vs Human")
+        print("  4: Checkmate Defense Mode")
+        print("  ESC: Quit")
         
+        running = True
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -186,9 +237,9 @@ class PygameChessGUI:
                         self.set_game_mode("human_vs_computer")
                     elif event.key == pygame.K_3:
                         self.set_game_mode("computer_vs_human")
+                    elif event.key == pygame.K_4:
+                        self.set_game_mode("checkmate_defense")
                     elif event.key == pygame.K_ESCAPE:
                         running = False
-            
-            clock.tick(60)
         
         pygame.quit() 

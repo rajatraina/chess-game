@@ -1,5 +1,6 @@
 import random
 import chess
+import time
 
 class Engine:
     """Base class for chess engines"""
@@ -29,6 +30,10 @@ class MinimaxEngine(Engine):
     
     def __init__(self, depth=4):
         self.depth = depth
+        self.min_depth = 4
+        self.max_depth = 10
+        self.time_limit = 10  # seconds
+        self.last_search_time = 0
 
     def get_move(self, board):
         """
@@ -51,6 +56,9 @@ class MinimaxEngine(Engine):
         
         print(f"\n🤔 Engine thinking (depth {self.depth})...")
         print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
+        
+        # Start timing the search
+        start_time = time.time()
         
         # Evaluate all legal moves
         for move in board.legal_moves:
@@ -93,6 +101,22 @@ class MinimaxEngine(Engine):
                     best_line = [move] + line
                 beta = min(beta, value)
         
+        # Calculate search time and adjust depth for next move
+        search_time = time.time() - start_time
+        self.last_search_time = search_time
+        
+        # Adjust depth based on search time
+        if search_time < self.time_limit and self.depth < self.max_depth:
+            self.depth += 1
+            print(f"⏱️ Search completed in {search_time:.2f}s (under {self.time_limit}s limit)")
+            print(f"📈 Increasing depth to {self.depth} for next move")
+        elif search_time > self.time_limit and self.depth > self.min_depth:
+            self.depth -= 1
+            print(f"⏱️ Search took {search_time:.2f}s (over {self.time_limit}s limit)")
+            print(f"📉 Decreasing depth to {self.depth} for next move")
+        else:
+            print(f"⏱️ Search completed in {search_time:.2f}s")
+        
         # Print the best move found
         if best_move:
             pv_board = board.copy()
@@ -103,7 +127,7 @@ class MinimaxEngine(Engine):
                     pv_board.push(m)
                 except Exception:
                     break
-            print(f"🏆 Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)}")
+            print(f"🏆 Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)} | Depth: {self.depth}")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
