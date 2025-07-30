@@ -3,6 +3,7 @@ import chess
 import chess.syzygy
 import time
 import os
+import sys
 
 class Engine:
     """Base class for chess engines"""
@@ -30,14 +31,160 @@ class MinimaxEngine(Engine):
     - Black's turn: minimize evaluation (find best move for Black)
     """
     
-    def __init__(self, depth=4):
+    def __init__(self, depth=4, max_memory_mb=100):
         self.depth = depth
         self.nodes_searched = 0
         self.search_start_time = 0
         
+        # Transposition table settings
+        self.max_memory_mb = max_memory_mb
+        self.transposition_table = {}
+        self.tt_hits = 0
+        self.tt_misses = 0
+        self.tt_size = 0
+        self.tt_memory_usage = 0
+        
+        # Initialize Zobrist hash table
+        self.zobrist_table = self._init_zobrist_table()
+        
         # Initialize Syzygy tablebase if available
         self.tablebase = None
         self.init_tablebase()
+    
+    def _init_zobrist_table(self):
+        """Initialize Zobrist hash table for efficient position hashing"""
+        import random
+        
+        # Create a random number generator with fixed seed for reproducibility
+        rng = random.Random(42)
+        
+        # Initialize Zobrist table
+        # 64 squares × 12 piece types (6 pieces × 2 colors) + 1 for en passant + 1 for castling
+        zobrist_table = {}
+        
+        # Piece hashes: 64 squares × 12 piece types
+        for square in range(64):
+            for piece_type in chess.PIECE_TYPES:
+                for color in [chess.WHITE, chess.BLACK]:
+                    piece = chess.Piece(piece_type, color)
+                    zobrist_table[(square, piece)] = rng.getrandbits(64)
+        
+        # En passant square hash
+        for square in range(64):
+            zobrist_table[('en_passant', square)] = rng.getrandbits(64)
+        
+        # Castling rights hash
+        castling_rights = [chess.BB_A1, chess.BB_H1, chess.BB_A8, chess.BB_H8]
+        for castling_right in castling_rights:
+            zobrist_table[('castling', castling_right)] = rng.getrandbits(64)
+        
+        # Side to move hash
+        zobrist_table['white_to_move'] = rng.getrandbits(64)
+        
+        return zobrist_table
+    
+    def _get_zobrist_hash(self, board):
+        """Calculate Zobrist hash for the current board position"""
+        hash_value = 0
+        
+        # Hash pieces
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece:
+                hash_value ^= self.zobrist_table[(square, piece)]
+        
+        # Hash en passant square
+        if board.ep_square is not None:
+            hash_value ^= self.zobrist_table[('en_passant', board.ep_square)]
+        
+        # Hash castling rights
+        castling_rights = [chess.BB_A1, chess.BB_H1, chess.BB_A8, chess.BB_H8]
+        for castling_right in castling_rights:
+            if board.has_castling_rights(castling_right):
+                hash_value ^= self.zobrist_table[('castling', castling_right)]
+        
+        # Hash side to move
+        if board.turn:
+            hash_value ^= self.zobrist_table['white_to_move']
+        
+        return hash_value
+    
+    def _get_tt_key(self, board, depth, alpha, beta):
+        """Generate transposition table key"""
+        hash_value = self._get_zobrist_hash(board)
+        return (hash_value, depth, alpha, beta)
+    
+    def _store_tt_entry(self, board, depth, alpha, beta, value, best_move, node_type):
+        """Store entry in transposition table"""
+        key = self._get_tt_key(board, depth, alpha, beta)
+        
+        # Estimate memory usage for this entry
+        entry_size = sys.getsizeof(key) + sys.getsizeof(value) + sys.getsizeof(best_move) + sys.getsizeof(node_type) + 50  # overhead
+        
+        # Check if we need to clear some entries due to memory limit
+        if self.tt_memory_usage + entry_size > self.max_memory_mb * 1024 * 1024:
+            self._clear_tt_table()
+        
+        # Store the entry
+        self.transposition_table[key] = {
+            'value': value,
+            'best_move': best_move,
+            'node_type': node_type,  # 'exact', 'alpha', 'beta'
+            'depth': depth
+        }
+        
+        self.tt_size = len(self.transposition_table)
+        self.tt_memory_usage += entry_size
+    
+    def _probe_tt_entry(self, board, depth, alpha, beta):
+        """Probe transposition table for existing entry"""
+        key = self._get_tt_key(board, depth, alpha, beta)
+        
+        if key in self.transposition_table:
+            entry = self.transposition_table[key]
+            
+            # Only use entry if it's from a search of sufficient depth
+            if entry['depth'] >= depth:
+                self.tt_hits += 1
+                return entry['value'], entry['best_move'], entry['node_type']
+        
+        self.tt_misses += 1
+        return None, None, None
+    
+    def _clear_tt_table(self):
+        """Clear transposition table to free memory"""
+        self.transposition_table.clear()
+        self.tt_size = 0
+        self.tt_memory_usage = 0
+        print(f"🧹 Cleared transposition table (memory limit reached)")
+    
+    def get_tt_stats(self):
+        """Get transposition table statistics"""
+        hit_rate = self.tt_hits / (self.tt_hits + self.tt_misses) if (self.tt_hits + self.tt_misses) > 0 else 0
+        memory_mb = self.tt_memory_usage / (1024 * 1024)
+        
+        return {
+            'hits': self.tt_hits,
+            'misses': self.tt_misses,
+            'hit_rate': hit_rate,
+            'size': self.tt_size,
+            'memory_mb': memory_mb,
+            'max_memory_mb': self.max_memory_mb
+        }
+    
+    def clear_tt_table(self):
+        """Clear transposition table and reset statistics"""
+        self.transposition_table.clear()
+        self.tt_hits = 0
+        self.tt_misses = 0
+        self.tt_size = 0
+        self.tt_memory_usage = 0
+        print(f"🧹 Cleared transposition table and reset statistics")
+    
+    def set_tt_memory_limit(self, max_memory_mb):
+        """Set the maximum memory limit for transposition table"""
+        self.max_memory_mb = max_memory_mb
+        print(f"💾 Set transposition table memory limit to {max_memory_mb}MB")
     
     def init_tablebase(self):
         """Initialize Syzygy tablebase if available"""
@@ -126,7 +273,12 @@ class MinimaxEngine(Engine):
         search_time = time.time() - start_time
         nodes_per_second = self.nodes_searched / search_time if search_time > 0 else 0
         
+        # Get transposition table statistics
+        tt_stats = self.get_tt_stats()
+        
         print(f"⏱️ Search completed in {search_time:.2f}s")
+        print(f"🧠 TT: {tt_stats['hits']} hits, {tt_stats['misses']} misses ({tt_stats['hit_rate']:.1%} hit rate)")
+        print(f"💾 TT: {tt_stats['size']} entries, {tt_stats['memory_mb']:.1f}MB / {tt_stats['max_memory_mb']}MB")
         
         # Print the best move found
         if best_move:
@@ -143,7 +295,7 @@ class MinimaxEngine(Engine):
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
         """
-        Minimax search with alpha-beta pruning.
+        Minimax search with alpha-beta pruning and transposition table.
         
         Args:
             board: Current board state
@@ -161,6 +313,17 @@ class MinimaxEngine(Engine):
         # Initialize variation if None
         if variation is None:
             variation = []
+        
+        # Check transposition table
+        tt_value, tt_move, tt_node_type = self._probe_tt_entry(board, depth, alpha, beta)
+        if tt_value is not None:
+            # Use transposition table entry
+            if tt_node_type == 'exact':
+                return tt_value, [tt_move] if tt_move else []
+            elif tt_node_type == 'alpha' and tt_value <= alpha:
+                return alpha, [tt_move] if tt_move else []
+            elif tt_node_type == 'beta' and tt_value >= beta:
+                return beta, [tt_move] if tt_move else []
             
         # Leaf node: evaluate position
         if depth == 0:
@@ -172,16 +335,24 @@ class MinimaxEngine(Engine):
             eval = self.evaluate(board)
             return self._quiescence(board, alpha, beta)
         
-        # Sort moves to prioritize captures first
+        # Sort moves to prioritize transposition table move first, then captures
         legal_moves = list(board.legal_moves)
+        
+        # Put transposition table move first if available
+        sorted_moves = []
+        if tt_move and tt_move in legal_moves:
+            sorted_moves.append(tt_move)
+            legal_moves.remove(tt_move)
+        
+        # Then prioritize captures
         captures = [move for move in legal_moves if board.is_capture(move)]
         non_captures = [move for move in legal_moves if not board.is_capture(move)]
         
         # Sort captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
         captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
         
-        # Combine captures first, then other moves
-        sorted_moves = captures + non_captures
+        # Combine: TT move first, then captures, then other moves
+        sorted_moves.extend(captures + non_captures)
         
         # White's turn: maximize evaluation
         if board.turn:
@@ -214,6 +385,15 @@ class MinimaxEngine(Engine):
                 alpha = max(alpha, eval)
                 if beta <= alpha:
                     break  # Beta cutoff
+            
+            # Store result in transposition table
+            node_type = 'exact'
+            if max_eval <= alpha:
+                node_type = 'alpha'
+            elif max_eval >= beta:
+                node_type = 'beta'
+            
+            self._store_tt_entry(board, depth, alpha, beta, max_eval, best_line[0] if best_line else None, node_type)
                     
             return max_eval, best_line
             
@@ -248,6 +428,15 @@ class MinimaxEngine(Engine):
                 beta = min(beta, eval)
                 if beta <= alpha:
                     break  # Alpha cutoff
+            
+            # Store result in transposition table
+            node_type = 'exact'
+            if min_eval <= alpha:
+                node_type = 'alpha'
+            elif min_eval >= beta:
+                node_type = 'beta'
+            
+            self._store_tt_entry(board, depth, alpha, beta, min_eval, best_line[0] if best_line else None, node_type)
                     
             return min_eval, best_line
 
