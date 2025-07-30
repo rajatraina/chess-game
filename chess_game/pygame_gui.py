@@ -3,8 +3,12 @@ os.environ["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
 import pygame
 import chess
 import random
+import threading
+import sys
+import select
 from chess_game.board import ChessBoard
 from chess_game.engine import MinimaxEngine
+import time
 
 ASSET_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'pieces')
 
@@ -22,6 +26,16 @@ class PygameChessGUI:
         self.selected_square = None
         self.game_mode = "human_vs_computer"
         self.engine = MinimaxEngine(depth=4)
+        
+        # Computer vs Computer mode tracking
+        self.computer_vs_computer_mode = False
+        self.total_nodes = 0
+        self.total_moves = 0
+        self.game_start_time = 0
+        
+        # Terminal input handling
+        self.running = True
+        self.terminal_input_thread = None
         
         self.load_images()
         self.draw_board()
@@ -114,15 +128,55 @@ class PygameChessGUI:
         return None
     
     def make_computer_move(self):
-        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense"]:
+        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "computer_vs_computer"]:
             chess_board = self.board.get_board()
             if not chess_board.is_game_over():
+                # Track nodes for computer vs computer mode
+                if self.computer_vs_computer_mode:
+                    nodes_before = self.engine.nodes_searched
+                    print(f"🤖 Computer vs Computer: {'White' if chess_board.turn else 'Black'} to move")
+                
                 move = self.engine.get_move(chess_board)
+                
                 if move:
+                    # Update statistics for computer vs computer mode
+                    if self.computer_vs_computer_mode:
+                        nodes_this_move = self.engine.nodes_searched - nodes_before
+                        self.total_nodes += nodes_this_move
+                        self.total_moves += 1
+                        
+                        # Calculate and display average speed
+                        elapsed_time = time.time() - self.game_start_time
+                        if elapsed_time > 0:
+                            avg_nodes_per_second = self.total_nodes / elapsed_time
+                            print(f"📊 Game Stats: {self.total_moves} moves, {self.total_nodes} nodes, {avg_nodes_per_second:.0f} avg nodes/s")
+                    
                     chess_board.push(move)
                     self.draw_board()
                     if chess_board.is_game_over():
                         self.show_game_over()
+                        
+                        # Final statistics for computer vs computer mode
+                        if self.computer_vs_computer_mode:
+                            self.show_final_stats()
+                    else:
+                        # In computer vs computer mode, continue with the next move
+                        if self.computer_vs_computer_mode:
+                            print(f"⏳ Waiting 1 second before next move...")
+                            pygame.time.wait(1000)  # Wait 1 second between moves
+                            self.make_computer_move()  # Recursive call for next move
+    
+    def show_final_stats(self):
+        """Display final statistics for computer vs computer mode"""
+        elapsed_time = time.time() - self.game_start_time
+        if elapsed_time > 0:
+            avg_nodes_per_second = self.total_nodes / elapsed_time
+            print(f"\n🏁 FINAL GAME STATISTICS:")
+            print(f"   Total moves: {self.total_moves}")
+            print(f"   Total nodes searched: {self.total_nodes:,}")
+            print(f"   Total time: {elapsed_time:.2f} seconds")
+            print(f"   Average speed: {avg_nodes_per_second:.0f} nodes/second")
+            print(f"   Average nodes per move: {self.total_nodes // self.total_moves if self.total_moves > 0 else 0:,}")
     
     def show_game_over(self):
         result = self.board.get_board().result()
@@ -142,8 +196,16 @@ class PygameChessGUI:
                 print("🎯 Try again to see if you can survive longer!")
             else:
                 print("🎉 Amazing! You survived the checkmate attempt!")
+        
+        # Special message for computer vs computer mode
+        if self.computer_vs_computer_mode:
+            print("🤖 Computer vs Computer game completed!")
     
     def handle_click(self, pos):
+        # In computer vs computer mode, clicks are ignored
+        if self.computer_vs_computer_mode:
+            return
+            
         square = self.get_square_from_pos(pos)
         if square is None:
             return
@@ -184,6 +246,11 @@ class PygameChessGUI:
         self.board.reset()
         self.selected_square = None
         
+        # Reset computer vs computer statistics
+        self.total_nodes = 0
+        self.total_moves = 0
+        self.game_start_time = time.time()
+        
         # Set up special board for checkmate defense mode
         if self.game_mode == "checkmate_defense":
             self.setup_checkmate_defense_mode()
@@ -194,9 +261,14 @@ class PygameChessGUI:
         if self.game_mode == "computer_vs_human":
             pygame.time.wait(1000)
             self.make_computer_move()
+        elif self.game_mode == "computer_vs_computer":
+            # Start the computer vs computer game
+            pygame.time.wait(1000)
+            self.make_computer_move()
     
     def set_game_mode(self, mode):
         self.game_mode = mode
+        self.computer_vs_computer_mode = (mode == "computer_vs_computer")
         self.new_game()
         print(f"Game mode set to: {mode}")
         
@@ -208,6 +280,54 @@ class PygameChessGUI:
             print("• Try to avoid checkmate for as long as possible!")
             print("• Use your King to escape and avoid the Queen's attacks")
             print("• The computer will try to checkmate you efficiently")
+        
+        # Print special instructions for computer vs computer mode
+        elif mode == "computer_vs_computer":
+            print("\n🤖 Computer vs Computer Mode:")
+            print("• Two computer engines will play against each other")
+            print("• Search speed and statistics will be tracked")
+            print("• Watch the engines analyze positions in real-time")
+            print("• Final statistics will be shown at game end")
+    
+    def handle_terminal_input(self):
+        """Handle terminal input in a separate thread"""
+        while self.running:
+            try:
+                # Check if there's input available
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    line = sys.stdin.readline().strip()
+                    if line:
+                        self.process_terminal_command(line)
+            except (EOFError, KeyboardInterrupt):
+                break
+    
+    def process_terminal_command(self, command):
+        """Process terminal commands"""
+        command = command.upper()
+        if command == 'N':
+            print("🔄 Starting new game...")
+            self.new_game()
+        elif command == '1':
+            print("👥 Switching to Human vs Human mode...")
+            self.set_game_mode("human_vs_human")
+        elif command == '2':
+            print("🤖 Switching to Human vs Computer mode...")
+            self.set_game_mode("human_vs_computer")
+        elif command == '3':
+            print("🤖 Switching to Computer vs Human mode...")
+            self.set_game_mode("computer_vs_human")
+        elif command == '4':
+            print("🎯 Switching to Checkmate Defense mode...")
+            self.set_game_mode("checkmate_defense")
+        elif command == '5':
+            print("🤖 Switching to Computer vs Computer mode...")
+            self.set_game_mode("computer_vs_computer")
+        elif command == 'ESC' or command == 'QUIT':
+            print("👋 Quitting game...")
+            self.running = False
+        else:
+            print(f"❓ Unknown command: {command}")
+            print("Available commands: N, 1, 2, 3, 4, 5, ESC")
     
     def run(self):
         print("Starting Pygame Chess...")
@@ -218,13 +338,18 @@ class PygameChessGUI:
         print("  2: Human vs Computer")
         print("  3: Computer vs Human")
         print("  4: Checkmate Defense Mode")
+        print("  5: Computer vs Computer")
         print("  ESC: Quit")
+        print("\n💡 Tip: You can type commands in the terminal or use the Pygame window!")
         
-        running = True
-        while running:
+        # Start terminal input thread
+        self.terminal_input_thread = threading.Thread(target=self.handle_terminal_input, daemon=True)
+        self.terminal_input_thread.start()
+        
+        while self.running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
-                    running = False
+                    self.running = False
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:  # Left click
                         self.handle_click(event.pos)
@@ -239,7 +364,9 @@ class PygameChessGUI:
                         self.set_game_mode("computer_vs_human")
                     elif event.key == pygame.K_4:
                         self.set_game_mode("checkmate_defense")
+                    elif event.key == pygame.K_5:
+                        self.set_game_mode("computer_vs_computer")
                     elif event.key == pygame.K_ESCAPE:
-                        running = False
+                        self.running = False
         
         pygame.quit() 

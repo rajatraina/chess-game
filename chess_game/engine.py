@@ -1,6 +1,8 @@
 import random
 import chess
+import chess.syzygy
 import time
+import os
 
 class Engine:
     """Base class for chess engines"""
@@ -30,10 +32,29 @@ class MinimaxEngine(Engine):
     
     def __init__(self, depth=4):
         self.depth = depth
-        self.min_depth = 4
-        self.max_depth = 10
-        self.time_limit = 10  # seconds
-        self.last_search_time = 0
+        self.nodes_searched = 0
+        self.search_start_time = 0
+        
+        # Initialize Syzygy tablebase if available
+        self.tablebase = None
+        self.init_tablebase()
+    
+    def init_tablebase(self):
+        """Initialize Syzygy tablebase if available"""
+        try:
+            # Check local syzygy/3-4-5 directory
+            tablebase_path = "./syzygy/3-4-5"
+            
+            if os.path.exists(tablebase_path):
+                self.tablebase = chess.syzygy.open_tablebase(tablebase_path)
+                return
+            
+            # No tablebases found - this is normal, no warning needed
+            self.tablebase = None
+            
+        except Exception as e:
+            print(f"⚠️  Could not initialize tablebase: {e}")
+            self.tablebase = None
 
     def get_move(self, board):
         """
@@ -57,8 +78,20 @@ class MinimaxEngine(Engine):
         print(f"\n🤔 Engine thinking (depth {self.depth})...")
         print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
         
-        # Start timing the search
+        # Check if position is in tablebase
+        if self.tablebase and self.is_endgame_position(board):
+            print(f"🔍 Checking tablebase for position with {sum(len(board.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])} pieces")
+            tablebase_move = self.get_tablebase_move(board)
+            if tablebase_move:
+                print(f"🎯 Using tablebase move: {board.san(tablebase_move)}")
+                return tablebase_move
+            else:
+                print("⚠️  Tablebase lookup failed, using standard search")
+        
+        # Start timing the search and reset node counter
         start_time = time.time()
+        self.search_start_time = start_time
+        self.nodes_searched = 0
         
         # Evaluate all legal moves
         for move in board.legal_moves:
@@ -75,18 +108,6 @@ class MinimaxEngine(Engine):
             # Undo the move to restore the original board state
             board.pop()
             
-            # Print the principal variation (best line) for this move
-            pv_board = board.copy()
-            pv_moves = [move] + line
-            pv_san = []
-            for m in pv_moves:
-                try:
-                    pv_san.append(pv_board.san(m))
-                    pv_board.push(m)
-                except Exception:
-                    break
-            print(f"  🎯 {pv_san[0]}: {value} | PV: {' '.join(pv_san)}")
-            
             # Update best move based on whose turn it is
             if board.turn:  # White to move: pick highest evaluation
                 if value > best_value:
@@ -101,21 +122,11 @@ class MinimaxEngine(Engine):
                     best_line = [move] + line
                 beta = min(beta, value)
         
-        # Calculate search time and adjust depth for next move
+        # Calculate search time and nodes per second
         search_time = time.time() - start_time
-        self.last_search_time = search_time
+        nodes_per_second = self.nodes_searched / search_time if search_time > 0 else 0
         
-        # Adjust depth based on search time
-        if search_time < self.time_limit and self.depth < self.max_depth:
-            self.depth += 1
-            print(f"⏱️ Search completed in {search_time:.2f}s (under {self.time_limit}s limit)")
-            print(f"📈 Increasing depth to {self.depth} for next move")
-        elif search_time > self.time_limit and self.depth > self.min_depth:
-            self.depth -= 1
-            print(f"⏱️ Search took {search_time:.2f}s (over {self.time_limit}s limit)")
-            print(f"📉 Decreasing depth to {self.depth} for next move")
-        else:
-            print(f"⏱️ Search completed in {search_time:.2f}s")
+        print(f"⏱️ Search completed in {search_time:.2f}s")
         
         # Print the best move found
         if best_move:
@@ -127,7 +138,7 @@ class MinimaxEngine(Engine):
                     pv_board.push(m)
                 except Exception:
                     break
-            print(f"🏆 Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)} | Depth: {self.depth}")
+            print(f"🏆 Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
@@ -144,6 +155,9 @@ class MinimaxEngine(Engine):
         Returns:
             Tuple of (evaluation, principal_variation)
         """
+        # Count this node
+        self.nodes_searched += 1
+        
         # Initialize variation if None
         if variation is None:
             variation = []
@@ -189,10 +203,12 @@ class MinimaxEngine(Engine):
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
-                    # Only print when we find a new best move! 🎯
+                    # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
-                        variation_str = " -> ".join(variation + [move_san]) if variation else move_san
-                        print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
+                        # Check if this is significantly better (at least 1 point improvement)
+                        if eval > max_eval + 1 or max_eval == -float('inf'):
+                            variation_str = " -> ".join(variation + [move_san]) if variation else move_san
+                            print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 alpha = max(alpha, eval)
@@ -221,10 +237,12 @@ class MinimaxEngine(Engine):
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move] + line
-                    # Only print when we find a new best move! 🎯
+                    # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
-                        variation_str = " -> ".join(variation + [move_san]) if variation else move_san
-                        print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
+                        # Check if this is significantly better (at least 1 point improvement)
+                        if eval < min_eval - 1 or min_eval == float('inf'):
+                            variation_str = " -> ".join(variation + [move_san]) if variation else move_san
+                            print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 beta = min(beta, eval)
@@ -381,6 +399,9 @@ class MinimaxEngine(Engine):
         Returns:
             Tuple of (evaluation, principal_variation)
         """
+        # Count this node
+        self.nodes_searched += 1
+        
         # Limit quiescence depth to prevent infinite loops
         if depth > 10:
             return self.evaluate(board), []
@@ -522,3 +543,108 @@ class MinimaxEngine(Engine):
         board.pop()
         
         return eval_after 
+
+    def is_endgame_position(self, board):
+        """Check if position is suitable for tablebase lookup"""
+        # Count pieces
+        piece_count = 0
+        for piece_type in chess.PIECE_TYPES:
+            piece_count += len(board.pieces(piece_type, chess.WHITE))
+            piece_count += len(board.pieces(piece_type, chess.BLACK))
+        
+        # Tablebases work best with 7 or fewer pieces
+        return piece_count <= 7
+    
+    def get_tablebase_move(self, board):
+        """Get the best move from tablebase if available"""
+        try:
+            if not self.tablebase:
+                print("⚠️  No tablebase available")
+                return None
+            
+            # Get tablebase information for current position
+            wdl = self.tablebase.get_wdl(board)
+            if wdl is None:
+                print("⚠️  Position not found in tablebase")
+                return None
+            
+            # WDL values: 2 = win, 1 = cursed win, 0 = draw, -1 = blessed loss, -2 = loss
+            wdl_names = {2: "Win", 1: "Cursed Win", 0: "Draw", -1: "Blessed Loss", -2: "Loss"}
+            print(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
+            
+            # Get DTZ for current position to understand the fastest path
+            dtz = self.tablebase.get_dtz(board)
+            if dtz is not None:
+                print(f"📊 Tablebase: DTZ={dtz} (Distance To Zero)")
+            
+            # Find the best move by trying each legal move
+            best_move = None
+            best_wdl = None
+            best_dtz = None
+            
+            print(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
+            
+            moves_checked = 0
+            for move in board.legal_moves:
+                # Get SAN notation before pushing the move
+                move_san = board.san(move)
+                
+                board.push(move)
+                try:
+                    move_wdl = self.tablebase.get_wdl(board)
+                    move_dtz = self.tablebase.get_dtz(board)
+                    moves_checked += 1
+                    
+                    if move_wdl is not None:
+                        # The WDL value is from the perspective of the side that just moved
+                        # We need to find the best move for the side that is about to move
+                        
+                        # When White is to move (board.turn was True), after making a move, board.turn becomes False (Black to move)
+                        # When Black is to move (board.turn was False), after making a move, board.turn becomes True (White to move)
+                        
+                        if not board.turn:  # White just moved, so Black is to move next
+                            # We want to find the best move for White
+                            # The WDL value represents what Black can achieve after White's move
+                            # White wants to minimize Black's best result (minimize WDL from Black's perspective)
+                            # Among moves with the same WDL, choose the one with lowest DTZ (fastest win for White)
+                            if (best_wdl is None or 
+                                move_wdl < best_wdl or 
+                                (move_wdl == best_wdl and move_dtz is not None and 
+                                 (best_dtz is None or move_dtz < best_dtz))):
+                                best_wdl = move_wdl
+                                best_dtz = move_dtz
+                                best_move = move
+                                print(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - White's best move")
+                        else:  # Black just moved, so White is to move next
+                            # We want to find the best move for Black
+                            # The WDL value represents what White can achieve after Black's move
+                            # Black wants to minimize White's best result (minimize WDL from White's perspective)
+                            # Among moves with the same WDL, choose the one with highest DTZ (slowest win for White)
+                            if (best_wdl is None or 
+                                move_wdl < best_wdl or 
+                                (move_wdl == best_wdl and move_dtz is not None and 
+                                 (best_dtz is None or move_dtz > best_dtz))):
+                                best_wdl = move_wdl
+                                best_dtz = move_dtz
+                                best_move = move
+                                print(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - Black's best move")
+                    else:
+                        print(f"  ❌ {move_san}: Not found in tablebase")
+                except Exception as e:
+                    print(f"⚠️  Error checking move {move_san}: {e}")
+                board.pop()
+            
+            print(f"📊 Checked {moves_checked} moves in tablebase")
+            
+            if best_move:
+                best_move_san = board.san(best_move)
+                side_to_move = "White" if board.turn else "Black"
+                print(f"🎯 Tablebase best move for {side_to_move}: {best_move_san} (WDL={best_wdl} - {wdl_names.get(best_wdl, 'Unknown')}, DTZ={best_dtz})")
+            else:
+                print("⚠️  No best move found in tablebase")
+            
+            return best_move
+            
+        except Exception as e:
+            print(f"⚠️  Tablebase error: {e}")
+            return None 

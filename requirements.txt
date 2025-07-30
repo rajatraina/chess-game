@@ -1,4 +1,5 @@
 python-chess
 Pillow
 pygame
-# tkinter is included with Python standard library 
+# syzygy tablebases for endgame support (optional)
+# Download from: https://syzygy-tables.info/ 
