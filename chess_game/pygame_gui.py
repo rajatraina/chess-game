@@ -25,7 +25,7 @@ class PygameChessGUI:
         self.images = {}
         self.selected_square = None
         self.game_mode = "human_vs_computer"
-        self.engine = MinimaxEngine(depth=4, max_memory_mb=50)
+        self.engine = MinimaxEngine(depth=4, evaluator_type="handcrafted")
         
         # Computer vs Computer mode tracking
         self.computer_vs_computer_mode = False
@@ -334,23 +334,20 @@ class PygameChessGUI:
         elif command == '5':
             print("🤖 Switching to Computer vs Computer mode...")
             self.set_game_mode("computer_vs_computer")
-        elif command == 'TT':
-            tt_stats = self.engine.get_tt_stats()
-            print(f"🧠 Transposition Table Statistics:")
-            print(f"  Hits: {tt_stats['hits']}")
-            print(f"  Misses: {tt_stats['misses']}")
-            print(f"  Hit Rate: {tt_stats['hit_rate']:.1%}")
-            print(f"  Entries: {tt_stats['size']}")
-            print(f"  Memory: {tt_stats['memory_mb']:.1f}MB / {tt_stats['max_memory_mb']}MB")
-        elif command == 'CLEAR_TT':
-            self.engine.clear_tt_table()
-            print("🧹 Cleared transposition table")
+        elif command == 'EVAL':
+            info = self.engine.get_evaluator_info()
+            print(f"🧠 Current Evaluator: {info['name']}")
+            print(f"📝 Description: {info['description']}")
+        elif command == 'SWITCH_EVAL':
+            print("Available evaluators:")
+            print("  handcrafted - Traditional material + positional evaluation")
+            print("  neural - Neural network evaluation (placeholder)")
         elif command == 'ESC' or command == 'QUIT':
             print("👋 Quitting game...")
             self.running = False
         else:
             print(f"❓ Unknown command: {command}")
-            print("Available commands: N, 1, 2, 3, 4, 5, TT, CLEAR_TT, ESC")
+            print("Available commands: N, 1, 2, 3, 4, 5, EVAL, SWITCH_EVAL, ESC")
     
     def run(self):
         print("Starting Pygame Chess...")
@@ -362,8 +359,7 @@ class PygameChessGUI:
         print("  3: Computer vs Human")
         print("  4: Checkmate Defense Mode")
         print("  5: Computer vs Computer")
-        print("  T: Show transposition table stats")
-        print("  C: Clear transposition table")
+        print("  E: Show current evaluator info")
         print("  ESC: Quit")
         print("\n💡 Tip: You can type commands in the terminal or use the Pygame window!")
         
@@ -391,17 +387,10 @@ class PygameChessGUI:
                         self.set_game_mode("checkmate_defense")
                     elif event.key == pygame.K_5:
                         self.set_game_mode("computer_vs_computer")
-                    elif event.key == pygame.K_t:
-                        tt_stats = self.engine.get_tt_stats()
-                        print(f"🧠 Transposition Table Statistics:")
-                        print(f"  Hits: {tt_stats['hits']}")
-                        print(f"  Misses: {tt_stats['misses']}")
-                        print(f"  Hit Rate: {tt_stats['hit_rate']:.1%}")
-                        print(f"  Entries: {tt_stats['size']}")
-                        print(f"  Memory: {tt_stats['memory_mb']:.1f}MB / {tt_stats['max_memory_mb']}MB")
-                    elif event.key == pygame.K_c:
-                        self.engine.clear_tt_table()
-                        print("🧹 Cleared transposition table")
+                    elif event.key == pygame.K_e:
+                        info = self.engine.get_evaluator_info()
+                        print(f"🧠 Current Evaluator: {info['name']}")
+                        print(f"📝 Description: {info['description']}")
                     elif event.key == pygame.K_ESCAPE:
                         self.running = False
         
