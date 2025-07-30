@@ -52,7 +52,7 @@ class PygameChessGUI:
                 print(f"Image not found: {img_path}")
     
     def setup_checkmate_defense_mode(self):
-        """Set up the board for checkmate defense mode: Human (White) has only King vs Computer (Black) with King and Queen"""
+        """Set up the board for checkmate defense mode: Human (White) has King + Pawn vs Computer (Black) with King + 2 Knights"""
         # Clear the board
         self.board.reset()
         chess_board = self.board.get_board()
@@ -62,14 +62,16 @@ class PygameChessGUI:
             if chess_board.piece_at(square):
                 chess_board.remove_piece_at(square)
         
-        # Place White King (Human) at e1
-        chess_board.set_piece_at(chess.E1, chess.Piece(chess.KING, chess.WHITE))
+        # Place White King (Human) at c4 and White Pawn at g2
+        chess_board.set_piece_at(chess.C4, chess.Piece(chess.KING, chess.WHITE))
+        chess_board.set_piece_at(chess.G2, chess.Piece(chess.PAWN, chess.WHITE))
         
-        # Place Black King at e8 and Black Queen at d8
+        # Place Black King at e8 and Black Knights at c6 and g4
         chess_board.set_piece_at(chess.E8, chess.Piece(chess.KING, chess.BLACK))
-        chess_board.set_piece_at(chess.D8, chess.Piece(chess.QUEEN, chess.BLACK))
+        chess_board.set_piece_at(chess.C6, chess.Piece(chess.KNIGHT, chess.BLACK))
+        chess_board.set_piece_at(chess.G4, chess.Piece(chess.KNIGHT, chess.BLACK))
         
-        print("♔ Checkmate Defense Mode: Human (White King) vs Computer (Black King + Queen)")
+        print("♔ Checkmate Defense Mode: Human (White King + Pawn) vs Computer (Black King + 2 Knights)")
         print("🎯 Goal: Try to avoid checkmate for as long as possible!")
     
     def draw_board(self):
@@ -219,6 +221,16 @@ class PygameChessGUI:
         else:
             # Try to make move
             move = chess.Move(self.selected_square, square)
+            
+            # Check if this is a pawn promotion
+            piece = self.board.get_board().piece_at(self.selected_square)
+            if piece and piece.piece_type == chess.PAWN:
+                # Check if pawn is moving to the 8th rank (promotion rank)
+                target_rank = chess.square_rank(square)
+                if (piece.color == chess.WHITE and target_rank == 7) or (piece.color == chess.BLACK and target_rank == 0):
+                    # Create promotion move to queen
+                    move = chess.Move(self.selected_square, square, chess.QUEEN)
+            
             if move in self.board.get_board().legal_moves:
                 self.board.get_board().push(move)
                 self.selected_square = None
@@ -275,10 +287,10 @@ class PygameChessGUI:
         # Print special instructions for checkmate defense mode
         if mode == "checkmate_defense":
             print("\n🎯 Checkmate Defense Mode Instructions:")
-            print("• You play as White with only a King")
-            print("• Computer plays as Black with King + Queen")
+            print("• You play as White with King + Pawn")
+            print("• Computer plays as Black with King + 2 Knights")
             print("• Try to avoid checkmate for as long as possible!")
-            print("• Use your King to escape and avoid the Queen's attacks")
+            print("• Use your King and Pawn to escape and avoid the Knights' attacks")
             print("• The computer will try to checkmate you efficiently")
         
         # Print special instructions for computer vs computer mode
