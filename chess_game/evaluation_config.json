@@ -1,6 +1,12 @@
 {
     "material_weight": 1.0,
     "positional_weight": 0.1,
+    "mobility_weights": {
+        "knight": 3,
+        "bishop": 4,
+        "rook": 5,
+        "queen": 2
+    },
     "piece_values": {
         "pawn": 100,
         "knight": 320,
@@ -11,5 +17,5 @@
     },
     "checkmate_bonus": 100000,
     "draw_value": 0,
-    "description": "Standard evaluation weights for handcrafted evaluator"
+    "description": "Standard evaluation weights for handcrafted evaluator with mobility"
 } 

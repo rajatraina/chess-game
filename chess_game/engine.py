@@ -34,7 +34,7 @@ class MinimaxEngine(Engine):
     - Black's turn: minimize evaluation (find best move for Black)
     """
     
-    def __init__(self, depth=4, evaluator_type="handcrafted", evaluator_config=None):
+    def __init__(self, depth=6, evaluator_type="handcrafted", evaluator_config=None):
         self.depth = depth
         self.nodes_searched = 0
         self.search_start_time = 0
@@ -45,6 +45,11 @@ class MinimaxEngine(Engine):
         # Initialize Syzygy tablebase if available
         self.tablebase = None
         self.init_tablebase()
+        
+        # Evaluation cache for repeated positions
+        self.eval_cache = {}
+        self.cache_hits = 0
+        self.cache_misses = 0
     
     def init_tablebase(self):
         """Initialize Syzygy tablebase if available"""
@@ -171,24 +176,16 @@ class MinimaxEngine(Engine):
         
         # Leaf node: evaluate position
         if depth == 0:
-            eval = self.evaluate(board)
+            eval = self.evaluate_cached(board)
             return self._quiescence(board, alpha, beta)
         
         # Base case: game over
         if board.is_game_over():
-            eval = self.evaluate(board)
+            eval = self.evaluate_cached(board)
             return self._quiescence(board, alpha, beta)
         
-        # Sort moves to prioritize captures first
-        legal_moves = list(board.legal_moves)
-        captures = [move for move in legal_moves if board.is_capture(move)]
-        non_captures = [move for move in legal_moves if not board.is_capture(move)]
-        
-        # Sort captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
-        captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
-        
-        # Combine captures first, then other moves
-        sorted_moves = captures + non_captures
+        # Use optimized move generation and sorting
+        sorted_moves = self._get_sorted_moves_optimized(board)
         
         # White's turn: maximize evaluation
         if board.turn:
@@ -270,6 +267,36 @@ class MinimaxEngine(Engine):
         """
         return self.evaluation_manager.evaluate(board)
     
+    def evaluate_cached(self, board):
+        """
+        Evaluate the current board position with caching for repeated positions.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Evaluation score from White's perspective
+        """
+        # Use board hash as cache key
+        board_hash = hash(board._transposition_key())
+        
+        if board_hash in self.eval_cache:
+            self.cache_hits += 1
+            return self.eval_cache[board_hash]
+        
+        self.cache_misses += 1
+        evaluation = self.evaluation_manager.evaluate(board)
+        self.eval_cache[board_hash] = evaluation
+        
+        # Limit cache size to prevent memory issues
+        if len(self.eval_cache) > 10000:
+            # Clear cache if it gets too large
+            self.eval_cache.clear()
+            self.cache_hits = 0
+            self.cache_misses = 0
+        
+        return evaluation
+    
     def get_evaluator_info(self):
         """Get information about the current evaluator"""
         return self.evaluation_manager.get_evaluator_info()
@@ -285,6 +312,18 @@ class MinimaxEngine(Engine):
     def clear_evaluation_history(self):
         """Clear evaluation history"""
         self.evaluation_manager.clear_history()
+    
+    def get_cache_stats(self):
+        """Get evaluation cache statistics"""
+        total_requests = self.cache_hits + self.cache_misses
+        hit_rate = (self.cache_hits / total_requests * 100) if total_requests > 0 else 0
+        return {
+            'hits': self.cache_hits,
+            'misses': self.cache_misses,
+            'total': total_requests,
+            'hit_rate': hit_rate,
+            'cache_size': len(self.eval_cache)
+        }
 
     def _quiescence(self, board, alpha, beta, depth=0):
         """
@@ -307,7 +346,7 @@ class MinimaxEngine(Engine):
             return self.evaluate(board), []
             
         # Evaluate current position (stand pat)
-        stand_pat = self.evaluate(board)
+        stand_pat = self.evaluate_cached(board)
         
         # Alpha-beta pruning at quiescence level
         if board.turn:  # White to move: maximize
@@ -319,12 +358,17 @@ class MinimaxEngine(Engine):
                 return alpha, []
             beta = min(beta, stand_pat)
         
-        # Only search captures
-        captures = [move for move in board.legal_moves if board.is_capture(move)]
+        # Only search captures with optimized generation
+        captures = []
+        for move in board.legal_moves:
+            if board.is_capture(move):
+                captures.append(move)
         
-        # Sort captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
-        # This improves move ordering and pruning efficiency
-        captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
+        # Sort captures by MVV-LVA for better pruning
+        if captures:
+            capture_values = [(move, self._get_capture_value(board, move)) for move in captures]
+            capture_values.sort(key=lambda x: x[1], reverse=True)
+            captures = [move for move, _ in capture_values]
         
         best_line = []
         for move in captures:
@@ -383,6 +427,44 @@ class MinimaxEngine(Engine):
         # MVV-LVA: Most Valuable Victim - Least Valuable Attacker
         # Higher values = more promising captures
         return piece_values[victim_piece.piece_type] * 10 - piece_values[attacker_piece.piece_type]
+    
+    def _get_sorted_moves_optimized(self, board):
+        """
+        Optimized move generation and sorting.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            List of moves sorted by priority (captures first, then others)
+        """
+        # Use generator to avoid creating full list initially
+        legal_moves = board.legal_moves
+        captures = []
+        non_captures = []
+        
+        # Single pass to categorize moves
+        for move in legal_moves:
+            if board.is_capture(move):
+                captures.append(move)
+            else:
+                non_captures.append(move)
+        
+        # Pre-calculate capture values for better sorting
+        if captures:
+            capture_values = []
+            for move in captures:
+                value = self._get_capture_value(board, move)
+                capture_values.append((move, value))
+            
+            # Sort captures by value (highest first)
+            capture_values.sort(key=lambda x: x[1], reverse=True)
+            sorted_captures = [move for move, _ in capture_values]
+        else:
+            sorted_captures = []
+        
+        # Combine captures first, then other moves
+        return sorted_captures + non_captures
 
     def test_capture_evaluation(self, board, move):
         """
@@ -446,14 +528,13 @@ class MinimaxEngine(Engine):
 
     def is_endgame_position(self, board):
         """Check if position is suitable for tablebase lookup"""
-        # Count pieces
-        piece_count = 0
-        for piece_type in chess.PIECE_TYPES:
-            piece_count += len(board.pieces(piece_type, chess.WHITE))
-            piece_count += len(board.pieces(piece_type, chess.BLACK))
-        
-        # Tablebases work best with 7 or fewer pieces
-        return piece_count <= 7
+        count = 0
+        for square in chess.SQUARES:
+            if board.piece_at(square) is not None:
+                count += 1
+                if count > 5:
+                    return False
+        return count <= 5
     
     def get_tablebase_move(self, board):
         """Get the best move from tablebase if available"""
