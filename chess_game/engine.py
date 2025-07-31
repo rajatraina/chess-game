@@ -39,7 +39,10 @@ class MinimaxEngine(Engine):
         self.nodes_searched = 0
         self.search_start_time = 0
         
-        # Initialize evaluation system
+        # Initialize evaluation system with config file by default
+        if evaluator_config is None:
+            evaluator_config = {"config_file": "chess_game/evaluation_config.json"}
+        
         self.evaluation_manager = EvaluationManager(evaluator_type, **(evaluator_config or {}))
         
         # Initialize Syzygy tablebase if available
@@ -84,6 +87,7 @@ class MinimaxEngine(Engine):
         # White wants to maximize (highest value), Black wants to minimize (lowest value)
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
+        best_components = None
         alpha = -float('inf')
         beta = float('inf')
         
@@ -115,7 +119,7 @@ class MinimaxEngine(Engine):
             
             # Search the resulting position
             # Note: After board.push(move), board.turn has changed to the opponent
-            value, line = self._minimax(board, self.depth - 1, alpha, beta, [move_san])
+            value, line, components = self._minimax(board, self.depth - 1, alpha, beta, [move_san])
             
             # Undo the move to restore the original board state
             board.pop()
@@ -126,12 +130,14 @@ class MinimaxEngine(Engine):
                     best_value = value
                     best_move = move
                     best_line = [move] + line
+                    best_components = components
                 alpha = max(alpha, value)
             else:  # Black to move: pick lowest evaluation
                 if value < best_value:
                     best_value = value
                     best_move = move
                     best_line = [move] + line
+                    best_components = components
                 beta = min(beta, value)
         
         # Calculate search time and nodes per second
@@ -140,7 +146,7 @@ class MinimaxEngine(Engine):
         
         print(f"⏱️ Search completed in {search_time:.2f}s")
         
-        # Print the best move found
+        # Print the best move found with component evaluation
         if best_move:
             pv_board = board.copy()
             pv_san = []
@@ -150,7 +156,10 @@ class MinimaxEngine(Engine):
                     pv_board.push(m)
                 except Exception:
                     break
-            print(f"🏆 Best: {pv_san[0]} ({best_value}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
+            
+            print(f"🏆 Best: {pv_san[0]} ({best_value:.1f}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
+            if best_components:
+                print(f"📊 (Material: {best_components['material']}, Position: {best_components['position']}, Mobility: {best_components['mobility']})")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
@@ -165,7 +174,7 @@ class MinimaxEngine(Engine):
             variation: The sequence of moves that led to this position (for debugging)
             
         Returns:
-            Tuple of (evaluation, principal_variation)
+            Tuple of (evaluation, principal_variation, evaluation_components)
         """
         # Count this node
         self.nodes_searched += 1
@@ -176,13 +185,13 @@ class MinimaxEngine(Engine):
         
         # Leaf node: evaluate position
         if depth == 0:
-            eval = self.evaluate_cached(board)
-            return self._quiescence(board, alpha, beta)
+            eval, line, components = self._quiescence(board, alpha, beta)
+            return eval, line, components
         
         # Base case: game over
         if board.is_game_over():
-            eval = self.evaluate_cached(board)
-            return self._quiescence(board, alpha, beta)
+            eval, line, components = self._quiescence(board, alpha, beta)
+            return eval, line, components
         
         # Use optimized move generation and sorting
         sorted_moves = self._get_sorted_moves_optimized(board)
@@ -199,7 +208,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
+                eval, line, components = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
                 
@@ -207,19 +216,20 @@ class MinimaxEngine(Engine):
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
+                    best_components = components
                     # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
                         if eval > max_eval + 1 or max_eval == -float('inf'):
                             variation_str = " -> ".join(variation + [move_san]) if variation else move_san
-                            print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
+                            print(f"  🌟 New best! {move_san}: {round(eval, 2)} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 alpha = max(alpha, eval)
                 if beta <= alpha:
                     break  # Beta cutoff
                     
-            return max_eval, best_line
+            return max_eval, best_line, best_components
             
         # Black's turn: minimize evaluation
         else:
@@ -233,7 +243,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
+                eval, line, components = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
                 
@@ -241,19 +251,20 @@ class MinimaxEngine(Engine):
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move] + line
+                    best_components = components
                     # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
                         if eval < min_eval - 1 or min_eval == float('inf'):
                             variation_str = " -> ".join(variation + [move_san]) if variation else move_san
-                            print(f"  🌟 New best! {move_san}: {eval} | Variation: {variation_str}")
+                            print(f"  🌟 New best! {move_san}: {round(eval, 2)} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 beta = min(beta, eval)
                 if beta <= alpha:
                     break  # Alpha cutoff
                     
-            return min_eval, best_line
+            return min_eval, best_line, best_components
 
     def evaluate(self, board):
         """
@@ -263,9 +274,22 @@ class MinimaxEngine(Engine):
             board: Current board state
             
         Returns:
-            Evaluation score from White's perspective
+            Evaluation score from White's perspective (rounded to 2 decimal places)
         """
-        return self.evaluation_manager.evaluate(board)
+        evaluation = self.evaluation_manager.evaluate(board)
+        return round(evaluation, 2)
+    
+    def evaluate_with_components(self, board):
+        """
+        Evaluate the current board position with component breakdown.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Dictionary with evaluation components and total score
+        """
+        return self.evaluation_manager.evaluate_with_components(board)
     
     def evaluate_cached(self, board):
         """
@@ -275,7 +299,7 @@ class MinimaxEngine(Engine):
             board: Current board state
             
         Returns:
-            Evaluation score from White's perspective
+            Evaluation score from White's perspective (rounded to 2 decimal places)
         """
         # Use board hash as cache key
         board_hash = hash(board._transposition_key())
@@ -286,16 +310,18 @@ class MinimaxEngine(Engine):
         
         self.cache_misses += 1
         evaluation = self.evaluation_manager.evaluate(board)
-        self.eval_cache[board_hash] = evaluation
+        rounded_evaluation = round(evaluation, 2)
+        self.eval_cache[board_hash] = rounded_evaluation
         
         # Limit cache size to prevent memory issues
-        if len(self.eval_cache) > 10000:
+        cache_size_limit = self.evaluation_manager.evaluator.config.get("cache_size_limit", 10000)
+        if len(self.eval_cache) > cache_size_limit:
             # Clear cache if it gets too large
             self.eval_cache.clear()
             self.cache_hits = 0
             self.cache_misses = 0
         
-        return evaluation
+        return rounded_evaluation
     
     def get_evaluator_info(self):
         """Get information about the current evaluator"""
@@ -336,14 +362,16 @@ class MinimaxEngine(Engine):
             depth: Current quiescence depth (to prevent infinite loops)
             
         Returns:
-            Tuple of (evaluation, principal_variation)
+            Tuple of (evaluation, principal_variation, evaluation_components)
         """
         # Count this node
         self.nodes_searched += 1
         
         # Limit quiescence depth to prevent infinite loops
-        if depth > 10:
-            return self.evaluate(board), []
+        quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_depth_limit", 10)
+        if depth > quiescence_depth_limit:
+            components = self.evaluate_with_components(board)
+            return self.evaluate(board), [], components
             
         # Evaluate current position (stand pat)
         stand_pat = self.evaluate_cached(board)
@@ -351,11 +379,13 @@ class MinimaxEngine(Engine):
         # Alpha-beta pruning at quiescence level
         if board.turn:  # White to move: maximize
             if stand_pat >= beta:
-                return beta, []
+                components = self.evaluate_with_components(board)
+                return beta, [], components
             alpha = max(alpha, stand_pat)
         else:  # Black to move: minimize
             if stand_pat <= alpha:
-                return alpha, []
+                components = self.evaluate_with_components(board)
+                return alpha, [], components
             beta = min(beta, stand_pat)
         
         # Only search captures with optimized generation
@@ -375,7 +405,7 @@ class MinimaxEngine(Engine):
             # Make the capture
             board.push(move)
             # Recursively search the resulting position
-            score, line = self._quiescence(board, alpha, beta, depth + 1)
+            score, line, components = self._quiescence(board, alpha, beta, depth + 1)
             # Undo the capture
             board.pop()
             
@@ -392,7 +422,9 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     break  # Alpha cutoff
         
-        return (alpha, best_line) if board.turn else (beta, best_line)
+        # Get evaluation components for the final position
+        final_components = self.evaluate_with_components(board)
+        return (alpha, best_line, final_components) if board.turn else (beta, best_line, final_components)
     
     def _get_capture_value(self, board, move):
         """
@@ -529,11 +561,25 @@ class MinimaxEngine(Engine):
     def is_endgame_position(self, board):
         """Check if position is suitable for tablebase lookup"""
         count = 0
+        white_king = False
+        black_king = False
+        
         for square in chess.SQUARES:
-            if board.piece_at(square) is not None:
+            piece = board.piece_at(square)
+            if piece is not None:
                 count += 1
+                if piece.piece_type == chess.KING:
+                    if piece.color == chess.WHITE:
+                        white_king = True
+                    else:
+                        black_king = True
                 if count > 5:
                     return False
+        
+        # Don't use tablebase for K vs K positions (only 2 pieces)
+        if count == 2 and white_king and black_king:
+            return False
+            
         return count <= 5
     
     def get_tablebase_move(self, board):
