@@ -1,0 +1,15 @@
+{
+    "material_weight": 1.0,
+    "positional_weight": 0.1,
+    "piece_values": {
+        "pawn": 100,
+        "knight": 320,
+        "bishop": 330,
+        "rook": 500,
+        "queen": 900,
+        "king": 20000
+    },
+    "checkmate_bonus": 100000,
+    "draw_value": 0,
+    "description": "Standard evaluation weights for handcrafted evaluator"
+} 
