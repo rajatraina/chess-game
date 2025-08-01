@@ -6,7 +6,7 @@
         "knight": 3,
         "bishop": 4,
         "rook": 4,
-        "queen": 2
+        "queen": 1
     },
     "mobility_quality_weights": {
         "central_squares_multiplier": 2.0,
@@ -23,7 +23,7 @@
         "knight": 320,
         "bishop": 330,
         "rook": 500,
-        "queen": 900,
+        "queen": 990,
         "king": 20000
     },
     "checkmate_bonus": 100000,

@@ -186,14 +186,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Rook table - encourage 7th rank and open files
         self.rook_table = [
-            0, 0, 0, 0, 0, 0, 0, 0,
-            2, 4, 4, 4, 4, 4, 4, 2,
-            -2, 0, 0, 0, 0, 0, 0, -2,
-            -2, 0, 0, 0, 0, 0, 0, -2,
-            -2, 0, 0, 0, 0, 0, 0, -2,
-            -2, 0, 0, 0, 0, 0, 0, -2,
-            -2, 0, 0, 0, 0, 0, 0, -2,
-            0, 0, 0, 2, 2, 0, 0, 0
+            0, 0, 0, 2, 2, 0, 0, 0,              # 1st rank - starting position
+            -2, 0, 0, 0, 0, 0, 0, -2,            # 2nd rank - discourage
+            -2, 0, 0, 0, 0, 0, 0, -2,            # 3rd rank - discourage
+            -2, 0, 0, 0, 0, 0, 0, -2,            # 4th rank - discourage
+            -2, 0, 0, 0, 0, 0, 0, -2,            # 5th rank - discourage
+            -2, 0, 0, 0, 0, 0, 0, -2,            # 6th rank - discourage
+            2, 4, 4, 4, 4, 4, 4, 2,               # 7th rank - encourage (attack)
+            0, 0, 0, 0, 0, 0, 0, 0                # 8th rank - neutral
         ]
         
         # Queen table - encourage central control
@@ -210,14 +210,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # King table - encourage castling and safety
         self.king_table = [
-            -5, -10, -15, -20, -20, -15, -10, -5,   # 8th rank - discourage
-            -10, -15, -20, -25, -25, -20, -15, -10, # 7th rank - discourage
-            -15, -20, -25, -30, -30, -25, -20, -15, # 6th rank - discourage
-            -20, -25, -30, -35, -35, -30, -25, -20, # 5th rank - strongly discourage
-            -25, -30, -35, -40, -40, -35, -30, -25, # 4th rank - strongly discourage
-            -30, -35, -40, -45, -45, -40, -35, -30, # 3rd rank - strongly discourage
-            5, 0, -5, -10, -10, -5, 0, 5,            # 2nd rank - encourage castling squares
-            5, 10, 30, -5, 0, -5, 30, 5               # 1st rank - encourage castling squares
+            5, 10, 30, -5, 0, -5, 30, 5,              # 1st rank - encourage castling squares
+            5, 0, -5, -10, -10, -5, 0, 5,             # 2nd rank - encourage castling squares
+            -30, -35, -40, -45, -45, -40, -35, -30,  # 3rd rank - strongly discourage
+            -25, -30, -35, -40, -40, -35, -30, -25,  # 4th rank - strongly discourage
+            -20, -25, -30, -35, -35, -30, -25, -20,  # 5th rank - strongly discourage
+            -15, -20, -25, -30, -30, -25, -20, -15,  # 6th rank - discourage
+            -10, -15, -20, -25, -25, -20, -15, -10,  # 7th rank - discourage
+            -5, -10, -15, -20, -20, -15, -10, -5     # 8th rank - discourage
         ]
         
         # Combine all tables
@@ -237,7 +237,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         """Initialize endgame-specific piece-square tables"""
         # Endgame pawn table - strongly encourage advancement
         self.endgame_pawn_table = [
-            0, 0, 0, 0, 0, 0, 0, 0,      # 8th rank - promotion
+            30, 30, 30, 30, 30, 30, 30, 30,      # 8th rank - promotion
             20, 20, 20, 20, 20, 20, 20, 20, # 7th rank - very high value
             15, 15, 15, 15, 15, 15, 15, 15, # 6th rank - high value
             10, 10, 10, 10, 10, 10, 10, 10, # 5th rank - good value
