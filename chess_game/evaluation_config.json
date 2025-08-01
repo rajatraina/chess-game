@@ -1,10 +1,11 @@
 {
     "material_weight": 1.0,
     "positional_weight": 0.1,
+    "mobility_weight": 0.3,
     "mobility_weights": {
         "knight": 3,
         "bishop": 4,
-        "rook": 5,
+        "rook": 4,
         "queen": 2
     },
     "mobility_quality_weights": {

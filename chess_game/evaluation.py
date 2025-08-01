@@ -130,6 +130,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Cache standard weights
         self.cached_material_weight = self.config.get("material_weight", 1.0)
         self.cached_positional_weight = self.config.get("positional_weight", 0.1)
+        self.cached_mobility_weight = self.config.get("mobility_weight", 0.3)
         
         # Cache central squares bitboard
         self.cached_central_squares = chess.BB_D4 | chess.BB_E4 | chess.BB_D5 | chess.BB_E5
@@ -216,7 +217,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             -25, -30, -35, -40, -40, -35, -30, -25, # 4th rank - strongly discourage
             -30, -35, -40, -45, -45, -40, -35, -30, # 3rd rank - strongly discourage
             5, 0, -5, -10, -10, -5, 0, 5,            # 2nd rank - encourage castling squares
-            10, 15, 5, 0, 0, 5, 15, 10               # 1st rank - encourage castling squares
+            5, 10, 30, -5, 0, -5, 30, 5               # 1st rank - encourage castling squares
         ]
         
         # Combine all tables
@@ -227,6 +228,45 @@ class HandcraftedEvaluator(BaseEvaluator):
             chess.ROOK: self.rook_table,
             chess.QUEEN: self.queen_table,
             chess.KING: self.king_table
+        }
+        
+        # Create endgame-specific piece-square tables
+        self._init_endgame_piece_square_tables()
+    
+    def _init_endgame_piece_square_tables(self):
+        """Initialize endgame-specific piece-square tables"""
+        # Endgame pawn table - strongly encourage advancement
+        self.endgame_pawn_table = [
+            0, 0, 0, 0, 0, 0, 0, 0,      # 8th rank - promotion
+            20, 20, 20, 20, 20, 20, 20, 20, # 7th rank - very high value
+            15, 15, 15, 15, 15, 15, 15, 15, # 6th rank - high value
+            10, 10, 10, 10, 10, 10, 10, 10, # 5th rank - good value
+            5, 5, 5, 5, 5, 5, 5, 5,        # 4th rank - moderate value
+            0, 0, 0, 0, 0, 0, 0, 0,        # 3rd rank - neutral
+            -5, -5, -5, -5, -5, -5, -5, -5, # 2nd rank - discourage
+            -10, -10, -10, -10, -10, -10, -10, -10 # 1st rank - strongly discourage
+        ]
+        
+        # Endgame king table - encourage centralization
+        self.endgame_king_table = [
+            -10, -5, 0, 5, 5, 0, -5, -10,   # 8th rank - moderate
+            -5, 0, 5, 10, 10, 5, 0, -5,     # 7th rank - good
+            0, 5, 10, 15, 15, 10, 5, 0,      # 6th rank - very good
+            5, 10, 15, 20, 20, 15, 10, 5,    # 5th rank - excellent
+            5, 10, 15, 20, 20, 15, 10, 5,    # 4th rank - excellent
+            0, 5, 10, 15, 15, 10, 5, 0,      # 3rd rank - very good
+            -5, 0, 5, 10, 10, 5, 0, -5,     # 2nd rank - good
+            -10, -5, 0, 5, 5, 0, -5, -10     # 1st rank - moderate
+        ]
+        
+        # Combine endgame tables
+        self.endgame_piece_square_tables = {
+            chess.PAWN: self.endgame_pawn_table,
+            chess.KNIGHT: self.knight_table,  # Same as middlegame
+            chess.BISHOP: self.bishop_table,  # Same as middlegame
+            chess.ROOK: self.rook_table,      # Same as middlegame
+            chess.QUEEN: self.queen_table,    # Same as middlegame
+            chess.KING: self.endgame_king_table
         }
     
     def evaluate(self, board: chess.Board) -> float:
@@ -318,15 +358,16 @@ class HandcraftedEvaluator(BaseEvaluator):
             
             # Calculate positional score (excluding mobility)
             positional_score = 0
-            for piece_type in self.piece_square_tables:
+            tables = self.endgame_piece_square_tables  # Use endgame tables
+            for piece_type in tables:
                 white_squares = board.pieces(piece_type, chess.WHITE)
                 black_squares = board.pieces(piece_type, chess.BLACK)
                 
                 for square in white_squares:
-                    positional_score += self.piece_square_tables[piece_type][square]
+                    positional_score += tables[piece_type][square]
                 
                 for square in black_squares:
-                    positional_score -= self.piece_square_tables[piece_type][chess.square_mirror(square)]
+                    positional_score -= tables[piece_type][chess.square_mirror(square)]
             
             # Apply endgame weights
             weighted_material = material_weight * material_score
@@ -339,20 +380,21 @@ class HandcraftedEvaluator(BaseEvaluator):
             
             # Calculate positional score (excluding mobility)
             positional_score = 0
-            for piece_type in self.piece_square_tables:
+            tables = self.piece_square_tables  # Use standard tables
+            for piece_type in tables:
                 white_squares = board.pieces(piece_type, chess.WHITE)
                 black_squares = board.pieces(piece_type, chess.BLACK)
                 
                 for square in white_squares:
-                    positional_score += self.piece_square_tables[piece_type][square]
+                    positional_score += tables[piece_type][square]
                 
                 for square in black_squares:
-                    positional_score -= self.piece_square_tables[piece_type][chess.square_mirror(square)]
+                    positional_score -= tables[piece_type][chess.square_mirror(square)]
             
             # Apply standard weights
             weighted_material = self.config["material_weight"] * material_score
             weighted_position = self.config["positional_weight"] * positional_score
-            weighted_mobility = self.config["positional_weight"] * mobility_score
+            weighted_mobility = self.config["mobility_weight"] * mobility_score
         
         total_score = weighted_material + weighted_position + weighted_mobility
         
@@ -390,20 +432,26 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _evaluate_positional(self, board: chess.Board) -> float:
         """Evaluate positional factors using optimized piece-square tables and mobility"""
+        # Check if this is an endgame position
+        is_endgame = self._is_endgame_position(board)
+        
+        # Choose appropriate piece-square tables
+        tables = self.endgame_piece_square_tables if is_endgame else self.piece_square_tables
+        
         positional_score = 0
         
-        for piece_type in self.piece_square_tables:
+        for piece_type in tables:
             # Use bitboard iteration for better performance
             white_squares = board.pieces(piece_type, chess.WHITE)
             black_squares = board.pieces(piece_type, chess.BLACK)
             
             # Add positional bonuses for White pieces
             for square in white_squares:
-                positional_score += self.piece_square_tables[piece_type][square]
+                positional_score += tables[piece_type][square]
             
             # Subtract positional bonuses for Black pieces (mirror the board)
             for square in black_squares:
-                positional_score -= self.piece_square_tables[piece_type][chess.square_mirror(square)]
+                positional_score -= tables[piece_type][chess.square_mirror(square)]
         
         # Add mobility evaluation
         mobility_score = self._evaluate_mobility(board)
@@ -659,14 +707,16 @@ class HandcraftedEvaluator(BaseEvaluator):
         Returns:
             Middlegame evaluation score
         """
-        # Calculate material and positional scores
+        # Calculate all components
         material_score = self._evaluate_material(board)
         positional_score = self._evaluate_positional(board)
+        mobility_score = self._evaluate_mobility(board)
         
         # Use cached standard weights for performance
         total_score = (
             self.cached_material_weight * material_score +
-            self.cached_positional_weight * positional_score
+            self.cached_positional_weight * positional_score +
+            self.cached_mobility_weight * mobility_score
         )
         
         return total_score

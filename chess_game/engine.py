@@ -89,7 +89,6 @@ class MinimaxEngine(Engine):
             endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
             search_depth = max(self.depth, endgame_depth)
             print(f"🎯 Endgame detected - using depth {search_depth}")
-        import copy
         best_move = None
         # Initialize best_value based on whose turn it is
         # White wants to maximize (highest value), Black wants to minimize (lowest value)
@@ -102,7 +101,7 @@ class MinimaxEngine(Engine):
         print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
         
         # Check if position is in tablebase
-        if self.tablebase and self.is_endgame_position(board):
+        if self.tablebase and self.is_tablebase_position(board):
             print(f"🔍 Checking tablebase for position with {sum(len(board.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])} pieces")
             tablebase_move = self.get_tablebase_move(board)
             if tablebase_move:
@@ -199,7 +198,7 @@ class MinimaxEngine(Engine):
         
         # Base case: game over
         if board.is_game_over():
-            return self._quiescence(board, alpha, beta)
+            return self.evaluate(board), []
         
         # Use optimized move generation and sorting
         sorted_moves = self._get_sorted_moves_optimized(board)
@@ -373,6 +372,10 @@ class MinimaxEngine(Engine):
         # Count this node
         self.nodes_searched += 1
         
+        # Check for game over conditions first
+        if board.is_game_over():
+            return self.evaluate(board), []
+            
         # Limit quiescence depth to prevent infinite loops
         quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_depth_limit", 10)
         if depth > quiescence_depth_limit:
@@ -469,11 +472,12 @@ class MinimaxEngine(Engine):
             board: Current board state
             
         Returns:
-            List of moves sorted by priority (captures first, then others)
+            List of moves sorted by priority (captures first, then checks, then others)
         """
         # Use generator to avoid creating full list initially
         legal_moves = board.legal_moves
         captures = []
+        checks = []
         non_captures = []
         
         # Single pass to categorize moves
@@ -481,7 +485,13 @@ class MinimaxEngine(Engine):
             if board.is_capture(move):
                 captures.append(move)
             else:
-                non_captures.append(move)
+                # Check if move gives check (but not checkmate - that's handled by search)
+                board.push(move)
+                if board.is_check():
+                    checks.append(move)
+                else:
+                    non_captures.append(move)
+                board.pop()
         
         # Pre-calculate capture values for better sorting
         if captures:
@@ -496,8 +506,8 @@ class MinimaxEngine(Engine):
         else:
             sorted_captures = []
         
-        # Combine captures first, then other moves
-        return sorted_captures + non_captures
+        # Combine captures first, then checks, then other moves
+        return sorted_captures + checks + non_captures
 
     def test_capture_evaluation(self, board, move):
         """
@@ -559,29 +569,9 @@ class MinimaxEngine(Engine):
         
         return eval_after
     
-    def is_endgame_position(self, board):
+    def is_tablebase_position(self, board):
         """Check if position is suitable for tablebase lookup"""
-        count = 0
-        white_king = False
-        black_king = False
-
-        for square in chess.SQUARES:
-            piece = board.piece_at(square)
-            if piece is not None:
-                count += 1
-                if piece.piece_type == chess.KING:
-                    if piece.color == chess.WHITE:
-                        white_king = True
-                    else:
-                        black_king = True
-                if count > 5:
-                    return False
-
-        # Don't use tablebase for K vs K positions (only 2 pieces)
-        if count == 2 and white_king and black_king:
-            return False
-
-        return count <= 5
+        return chess.popcount(board.occupied) <= 5
     
     def _is_endgame_position(self, board):
         """Check if position is an endgame for evaluation purposes"""
