@@ -87,7 +87,6 @@ class MinimaxEngine(Engine):
         # White wants to maximize (highest value), Black wants to minimize (lowest value)
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
-        best_components = None
         alpha = -float('inf')
         beta = float('inf')
         
@@ -119,7 +118,7 @@ class MinimaxEngine(Engine):
             
             # Search the resulting position
             # Note: After board.push(move), board.turn has changed to the opponent
-            value, line, components = self._minimax(board, self.depth - 1, alpha, beta, [move_san])
+            value, line = self._minimax(board, self.depth - 1, alpha, beta, [move_san])
             
             # Undo the move to restore the original board state
             board.pop()
@@ -130,14 +129,12 @@ class MinimaxEngine(Engine):
                     best_value = value
                     best_move = move
                     best_line = [move] + line
-                    best_components = components
                 alpha = max(alpha, value)
             else:  # Black to move: pick lowest evaluation
                 if value < best_value:
                     best_value = value
                     best_move = move
                     best_line = [move] + line
-                    best_components = components
                 beta = min(beta, value)
         
         # Calculate search time and nodes per second
@@ -157,9 +154,14 @@ class MinimaxEngine(Engine):
                 except Exception:
                     break
             
+            # Compute evaluation components for the position at the end of the principal variation
+            pv_board = board.copy()
+            for move in best_line:
+                pv_board.push(move)
+            final_components = self.evaluate_with_components(pv_board)
+            
             print(f"🏆 Best: {pv_san[0]} ({best_value:.1f}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
-            if best_components:
-                print(f"📊 (Material: {best_components['material']}, Position: {best_components['position']}, Mobility: {best_components['mobility']})")
+            print(f"📊 (Material: {final_components['material']}, Position: {final_components['position']}, Mobility: {final_components['mobility']})")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
@@ -174,7 +176,7 @@ class MinimaxEngine(Engine):
             variation: The sequence of moves that led to this position (for debugging)
             
         Returns:
-            Tuple of (evaluation, principal_variation, evaluation_components)
+            Tuple of (evaluation, principal_variation)
         """
         # Count this node
         self.nodes_searched += 1
@@ -185,13 +187,11 @@ class MinimaxEngine(Engine):
         
         # Leaf node: evaluate position
         if depth == 0:
-            eval, line, components = self._quiescence(board, alpha, beta)
-            return eval, line, components
+            return self._quiescence(board, alpha, beta)
         
         # Base case: game over
         if board.is_game_over():
-            eval, line, components = self._quiescence(board, alpha, beta)
-            return eval, line, components
+            return self._quiescence(board, alpha, beta)
         
         # Use optimized move generation and sorting
         sorted_moves = self._get_sorted_moves_optimized(board)
@@ -208,7 +208,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, components = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
+                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
                 
@@ -216,7 +216,6 @@ class MinimaxEngine(Engine):
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
-                    best_components = components
                     # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
@@ -229,7 +228,7 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     break  # Beta cutoff
                     
-            return max_eval, best_line, best_components
+            return max_eval, best_line
             
         # Black's turn: minimize evaluation
         else:
@@ -243,7 +242,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, components = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
+                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
                 
@@ -251,7 +250,6 @@ class MinimaxEngine(Engine):
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move] + line
-                    best_components = components
                     # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
@@ -264,7 +262,7 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     break  # Alpha cutoff
                     
-            return min_eval, best_line, best_components
+            return min_eval, best_line
 
     def evaluate(self, board):
         """
@@ -362,7 +360,7 @@ class MinimaxEngine(Engine):
             depth: Current quiescence depth (to prevent infinite loops)
             
         Returns:
-            Tuple of (evaluation, principal_variation, evaluation_components)
+            Tuple of (evaluation, principal_variation)
         """
         # Count this node
         self.nodes_searched += 1
@@ -370,8 +368,7 @@ class MinimaxEngine(Engine):
         # Limit quiescence depth to prevent infinite loops
         quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_depth_limit", 10)
         if depth > quiescence_depth_limit:
-            components = self.evaluate_with_components(board)
-            return self.evaluate(board), [], components
+            return self.evaluate(board), []
             
         # Evaluate current position (stand pat)
         stand_pat = self.evaluate_cached(board)
@@ -379,13 +376,11 @@ class MinimaxEngine(Engine):
         # Alpha-beta pruning at quiescence level
         if board.turn:  # White to move: maximize
             if stand_pat >= beta:
-                components = self.evaluate_with_components(board)
-                return beta, [], components
+                return beta, []
             alpha = max(alpha, stand_pat)
         else:  # Black to move: minimize
             if stand_pat <= alpha:
-                components = self.evaluate_with_components(board)
-                return alpha, [], components
+                return alpha, []
             beta = min(beta, stand_pat)
         
         # Only search captures with optimized generation
@@ -405,7 +400,7 @@ class MinimaxEngine(Engine):
             # Make the capture
             board.push(move)
             # Recursively search the resulting position
-            score, line, components = self._quiescence(board, alpha, beta, depth + 1)
+            score, line = self._quiescence(board, alpha, beta, depth + 1)
             # Undo the capture
             board.pop()
             
@@ -422,9 +417,7 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     break  # Alpha cutoff
         
-        # Get evaluation components for the final position
-        final_components = self.evaluate_with_components(board)
-        return (alpha, best_line, final_components) if board.turn else (beta, best_line, final_components)
+        return (alpha, best_line) if board.turn else (beta, best_line)
     
     def _get_capture_value(self, board, move):
         """
