@@ -81,6 +81,14 @@ class MinimaxEngine(Engine):
         Returns:
             Best move found by the search
         """
+        # Check if this is an endgame position for deeper search
+        is_endgame = self._is_endgame_position(board)
+        search_depth = self.depth
+        
+        if is_endgame:
+            endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
+            search_depth = max(self.depth, endgame_depth)
+            print(f"🎯 Endgame detected - using depth {search_depth}")
         import copy
         best_move = None
         # Initialize best_value based on whose turn it is
@@ -90,7 +98,7 @@ class MinimaxEngine(Engine):
         alpha = -float('inf')
         beta = float('inf')
         
-        print(f"\n🤔 Engine thinking (depth {self.depth})...")
+        print(f"\n🤔 Engine thinking (depth {search_depth})...")
         print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
         
         # Check if position is in tablebase
@@ -118,7 +126,7 @@ class MinimaxEngine(Engine):
             
             # Search the resulting position
             # Note: After board.push(move), board.turn has changed to the opponent
-            value, line = self._minimax(board, self.depth - 1, alpha, beta, [move_san])
+            value, line = self._minimax(board, search_depth - 1, alpha, beta, [move_san])
             
             # Undo the move to restore the original board state
             board.pop()
@@ -549,14 +557,14 @@ class MinimaxEngine(Engine):
         # Undo the move
         board.pop()
         
-        return eval_after 
-
+        return eval_after
+    
     def is_endgame_position(self, board):
         """Check if position is suitable for tablebase lookup"""
         count = 0
         white_king = False
         black_king = False
-        
+
         for square in chess.SQUARES:
             piece = board.piece_at(square)
             if piece is not None:
@@ -568,12 +576,17 @@ class MinimaxEngine(Engine):
                         black_king = True
                 if count > 5:
                     return False
-        
+
         # Don't use tablebase for K vs K positions (only 2 pieces)
         if count == 2 and white_king and black_king:
             return False
-            
+
         return count <= 5
+    
+    def _is_endgame_position(self, board):
+        """Check if position is an endgame for evaluation purposes"""
+        total_pieces = chess.popcount(board.occupied)
+        return total_pieces <= 12
     
     def get_tablebase_move(self, board):
         """Get the best move from tablebase if available"""

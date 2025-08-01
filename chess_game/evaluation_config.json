@@ -9,9 +9,14 @@
     },
     "mobility_quality_weights": {
         "central_squares_multiplier": 2.0,
-        "seventh_rank_multiplier": 3.0,
         "regular_squares_multiplier": 1.0
     },
+    "endgame_weights": {
+        "material_weight": 2.0,
+        "positional_weight": 1.5,
+        "mobility_weight": 0.1
+    },
+    "endgame_search_depth": 6,
     "piece_values": {
         "pawn": 100,
         "knight": 320,
