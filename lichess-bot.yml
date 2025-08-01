@@ -1,0 +1,41 @@
+# Lichess Bot Configuration
+# Engine configuration for playing on Lichess
+
+# Your Lichess Bot API Token
+token: lip_2h6OTKMvJ0AyRNxDuRJv
+
+# Engine command to run your chess engine
+engine: python3 uci_interface.py
+
+# Optional: Engine working directory
+# working_dir: .
+
+# Optional: Engine timeout (seconds)
+# engine_timeout: 10
+
+# Optional: Challenge settings
+# challenge_timeout: 30
+# challenge_delay: 5
+
+# Optional: Game settings
+# game_timeout: 60
+# game_delay: 1
+
+# Optional: Logging
+# log_level: INFO
+# log_file: lichess-bot.log
+
+# Optional: Bot behavior
+# accept_draw: true
+# resign_enabled: true
+# resign_score: -1000
+# offer_draw_enabled: false
+# offer_draw_score: 100
+
+# Optional: Opening book (if you have one)
+# opening_book: book.pgn
+
+# Optional: Engine options
+# engine_options:
+#   Depth: 6
+#   ThinkingTime: 2000 
