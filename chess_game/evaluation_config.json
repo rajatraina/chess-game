@@ -2,11 +2,11 @@
     "material_weight": 1.0,
     "positional_weight": 0.1,
     "mobility_weight": 0.3,
+    "mobility_evaluation_mode": "adaptive",
     "mobility_weights": {
         "knight": 3,
         "bishop": 4,
-        "rook": 4,
-        "queen": 1
+        "rook": 4
     },
     "mobility_quality_weights": {
         "central_squares_multiplier": 1.0,

@@ -107,13 +107,12 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _cache_config_values(self):
         """Cache frequently used config values for performance"""
-        # Cache mobility weights
+        # Cache mobility weights (excluding queen - use piece-square tables instead)
         mobility_weights = self.config.get("mobility_weights", {})
         self.cached_mobility_weights = {
             chess.KNIGHT: mobility_weights.get("knight", 3),
             chess.BISHOP: mobility_weights.get("bishop", 4),
-            chess.ROOK: mobility_weights.get("rook", 5),
-            chess.QUEEN: mobility_weights.get("queen", 2)
+            chess.ROOK: mobility_weights.get("rook", 5)
         }
         
         # Cache quality weights
@@ -131,9 +130,27 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.cached_material_weight = self.config.get("material_weight", 1.0)
         self.cached_positional_weight = self.config.get("positional_weight", 0.1)
         self.cached_mobility_weight = self.config.get("mobility_weight", 0.3)
+        self.cached_king_safety_weight = self.config.get("king_safety_weight", 1.0)
         
         # Cache central squares bitboard
         self.cached_central_squares = chess.BB_D4 | chess.BB_E4 | chess.BB_D5 | chess.BB_E5
+        
+        # Cache bishop pair bonus
+        self.cached_bishop_pair_bonus = self.config.get("bishop_pair_bonus", 30)
+        
+        # Cache pawn shield weight
+        self.cached_pawn_shield_weight = self.config.get("pawn_shield_weight", 5)
+        
+        # Cache castling bonuses
+        self.cached_kingside_castling_bonus = self.config.get("kingside_castling_bonus", 30)
+        self.cached_queenside_castling_bonus = self.config.get("queenside_castling_bonus", 25)
+        
+        # Cache square mirror mapping for positional evaluation
+        self.cached_square_mirror = {}
+        for square in range(64):
+            self.cached_square_mirror[square] = chess.square_mirror(square)
+        
+
     
     def _init_piece_values(self):
         """Initialize piece values from config"""
@@ -354,20 +371,10 @@ class HandcraftedEvaluator(BaseEvaluator):
             mobility_weight = self.cached_endgame_mobility_weight
             
             material_score = self._evaluate_material(board)
-            mobility_score = self._evaluate_mobility(board)
+            mobility_score = self._evaluate_mobility_adaptive(board)
             
-            # Calculate positional score (excluding mobility)
-            positional_score = 0
-            tables = self.endgame_piece_square_tables  # Use endgame tables
-            for piece_type in tables:
-                white_squares = board.pieces(piece_type, chess.WHITE)
-                black_squares = board.pieces(piece_type, chess.BLACK)
-                
-                for square in white_squares:
-                    positional_score += tables[piece_type][square]
-                
-                for square in black_squares:
-                    positional_score -= tables[piece_type][chess.square_mirror(square)]
+            # Calculate positional score using _evaluate_positional (which only handles PST)
+            positional_score = self._evaluate_positional(board, is_endgame=True)
             
             # Apply endgame weights
             weighted_material = material_weight * material_score
@@ -379,29 +386,19 @@ class HandcraftedEvaluator(BaseEvaluator):
         else:
             # Use standard evaluation
             material_score = self._evaluate_material(board)
-            mobility_score = self._evaluate_mobility(board)
+            mobility_score = self._evaluate_mobility_adaptive(board)
             
-            # Calculate positional score (excluding mobility)
-            positional_score = 0
-            tables = self.piece_square_tables  # Use standard tables
-            for piece_type in tables:
-                white_squares = board.pieces(piece_type, chess.WHITE)
-                black_squares = board.pieces(piece_type, chess.BLACK)
-                
-                for square in white_squares:
-                    positional_score += tables[piece_type][square]
-                
-                for square in black_squares:
-                    positional_score -= tables[piece_type][chess.square_mirror(square)]
+            # Calculate positional score using _evaluate_positional (which only handles PST)
+            positional_score = self._evaluate_positional(board, is_endgame=False)
             
-            # Apply standard weights
-            weighted_material = self.config["material_weight"] * material_score
-            weighted_position = self.config["positional_weight"] * positional_score
-            weighted_mobility = self.config["mobility_weight"] * mobility_score
+            # Apply standard weights using cached values for performance
+            weighted_material = self.cached_material_weight * material_score
+            weighted_position = self.cached_positional_weight * positional_score
+            weighted_mobility = self.cached_mobility_weight * mobility_score
             
             # Add king safety evaluation for middlegame
             king_safety_score = self._evaluate_king_safety(board)
-            weighted_king_safety = self.config.get("king_safety_weight", 1.0) * king_safety_score
+            weighted_king_safety = self.cached_king_safety_weight * king_safety_score
         
         total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety
         
@@ -417,6 +414,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         """Evaluate material balance using optimized bitboard operations"""
         material_score = 0
         
+        # Cache bishop counts for reuse
+        white_bishops = 0
+        black_bishops = 0
+        
         for piece_type in self.piece_values:
             # Use bitboard operations instead of len() for better performance
             white_bb = board.pieces(piece_type, chess.WHITE)
@@ -425,12 +426,14 @@ class HandcraftedEvaluator(BaseEvaluator):
             black_count = chess.popcount(black_bb)
             material_score += white_count * self.piece_values[piece_type]
             material_score -= black_count * self.piece_values[piece_type]
+            
+            # Cache bishop counts for bishop pair bonus
+            if piece_type == chess.BISHOP:
+                white_bishops = white_count
+                black_bishops = black_count
         
-        # Add bishop pair bonus
-        bishop_pair_bonus = self.config.get("bishop_pair_bonus", 30)
-        white_bishops = chess.popcount(board.pieces(chess.BISHOP, chess.WHITE))
-        black_bishops = chess.popcount(board.pieces(chess.BISHOP, chess.BLACK))
-        
+        # Add bishop pair bonus using cached counts
+        bishop_pair_bonus = self.cached_bishop_pair_bonus
         if white_bishops >= 2:
             material_score += bishop_pair_bonus
         if black_bishops >= 2:
@@ -438,10 +441,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         return material_score
     
-    def _evaluate_positional(self, board: chess.Board) -> float:
+    def _evaluate_positional(self, board: chess.Board, is_endgame: bool = None) -> float:
         """Evaluate positional factors using optimized piece-square tables and mobility"""
-        # Check if this is an endgame position
-        is_endgame = self._is_endgame_position(board)
+        # Check if this is an endgame position (only if not provided)
+        if is_endgame is None:
+            is_endgame = self._is_endgame_position(board)
         
         # Choose appropriate piece-square tables
         tables = self.endgame_piece_square_tables if is_endgame else self.piece_square_tables
@@ -457,19 +461,12 @@ class HandcraftedEvaluator(BaseEvaluator):
             for square in white_squares:
                 positional_score += tables[piece_type][square]
             
-            # Subtract positional bonuses for Black pieces (mirror the board)
+            # Subtract positional bonuses for Black pieces (use cached mirror mapping)
             for square in black_squares:
-                positional_score -= tables[piece_type][chess.square_mirror(square)]
+                positional_score -= tables[piece_type][self.cached_square_mirror[square]]
         
-        # Add mobility evaluation
-        mobility_score = self._evaluate_mobility(board)
-        positional_score += mobility_score
-        
-        # Add king safety evaluation only in middlegame
-        if not is_endgame:
-            king_safety_score = self._evaluate_king_safety(board)
-            positional_score += king_safety_score
-        
+        # Note: Mobility and king safety are handled separately in evaluate_with_components
+        # to avoid double-counting. This method only handles piece-square tables.
         return positional_score
     
     def _evaluate_mobility(self, board: chess.Board) -> float:
@@ -485,12 +482,27 @@ class HandcraftedEvaluator(BaseEvaluator):
         white_pieces = board.occupied_co[chess.WHITE]
         black_pieces = board.occupied_co[chess.BLACK]
         
-        # Evaluate mobility for each piece type
-        for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+        # Evaluate mobility for each piece type (excluding queen - use piece-square tables instead)
+        for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK]:
             mobility_score += self._evaluate_piece_mobility(board, piece_type, chess.WHITE, white_pieces, black_pieces)
             mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces, white_pieces)
         
         return mobility_score
+    
+
+    
+    def _evaluate_mobility_adaptive(self, board: chess.Board) -> float:
+        """
+        Adaptive mobility evaluation that skips mobility for endgames.
+        
+        Mobility is less important in endgames, so we can skip it entirely.
+        """
+        # Skip mobility evaluation for endgames
+        if self._is_endgame_position(board):
+            return 0.0
+        
+        # Use full evaluation for middlegame positions
+        return self._evaluate_mobility(board)
     
     def _evaluate_king_safety(self, board: chess.Board) -> float:
         """
@@ -526,25 +538,27 @@ class HandcraftedEvaluator(BaseEvaluator):
         """
         castling_bonus = 0
         
-        # Check if White has castled
+        # Cache king squares to avoid multiple lookups
         white_king_square = board.king(chess.WHITE)
+        black_king_square = board.king(chess.BLACK)
+        
+        # Check if White has castled
         if white_king_square is not None:
             # Kingside castling (g1)
             if white_king_square == chess.G1:
-                castling_bonus += self.config.get("kingside_castling_bonus", 30)
+                castling_bonus += self.cached_kingside_castling_bonus
             # Queenside castling (c1)
             elif white_king_square == chess.C1:
-                castling_bonus += self.config.get("queenside_castling_bonus", 25)
+                castling_bonus += self.cached_queenside_castling_bonus
         
         # Check if Black has castled
-        black_king_square = board.king(chess.BLACK)
         if black_king_square is not None:
             # Kingside castling (g8)
             if black_king_square == chess.G8:
-                castling_bonus -= self.config.get("kingside_castling_bonus", 30)
+                castling_bonus -= self.cached_kingside_castling_bonus
             # Queenside castling (c8)
             elif black_king_square == chess.C8:
-                castling_bonus -= self.config.get("queenside_castling_bonus", 25)
+                castling_bonus -= self.cached_queenside_castling_bonus
         
         return castling_bonus
     
@@ -560,17 +574,19 @@ class HandcraftedEvaluator(BaseEvaluator):
         """
         pawn_shield_score = 0
         
-        # Evaluate White's pawn shield
+        # Cache king squares to avoid multiple lookups
         white_king_square = board.king(chess.WHITE)
+        black_king_square = board.king(chess.BLACK)
+        
+        # Evaluate White's pawn shield
         if white_king_square is not None:
             white_pawn_shield = self._count_pawn_shield(board, white_king_square, chess.WHITE)
-            pawn_shield_score += white_pawn_shield * self.config.get("pawn_shield_weight", 5)
+            pawn_shield_score += white_pawn_shield * self.cached_pawn_shield_weight
         
         # Evaluate Black's pawn shield
-        black_king_square = board.king(chess.BLACK)
         if black_king_square is not None:
             black_pawn_shield = self._count_pawn_shield(board, black_king_square, chess.BLACK)
-            pawn_shield_score -= black_pawn_shield * self.config.get("pawn_shield_weight", 5)
+            pawn_shield_score -= black_pawn_shield * self.cached_pawn_shield_weight
         
         return pawn_shield_score
     
@@ -688,101 +704,35 @@ class HandcraftedEvaluator(BaseEvaluator):
                     mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
                     
             elif piece_type == chess.ROOK:
-                # Use file and rank attacks
-                file_attacks = chess.BB_FILE_ATTACKS[square]
-                rank_attacks = chess.BB_RANK_ATTACKS[square]
-                if isinstance(file_attacks, dict) or isinstance(rank_attacks, dict):
-                    # Handle dictionary format - get exact attack bitboards for current occupancy
-                    file_occupancy = board.occupied & chess.BB_FILE_MASKS[square]
-                    rank_occupancy = board.occupied & chess.BB_RANK_MASKS[square]
-                    
-                    file_legal_moves = 0
-                    rank_legal_moves = 0
-                    
-                    if isinstance(file_attacks, dict) and file_occupancy in file_attacks:
-                        file_attack_bitboard = file_attacks[file_occupancy]
-                        file_legal_moves = file_attack_bitboard & ~friendly_pieces
-                    elif not isinstance(file_attacks, dict):
-                        file_legal_moves = file_attacks & ~friendly_pieces
-                    
-                    if isinstance(rank_attacks, dict) and rank_occupancy in rank_attacks:
-                        rank_attack_bitboard = rank_attacks[rank_occupancy]
-                        rank_legal_moves = rank_attack_bitboard & ~friendly_pieces
-                    elif not isinstance(rank_attacks, dict):
-                        rank_legal_moves = rank_attacks & ~friendly_pieces
-                    
-                    total_legal_moves = file_legal_moves | rank_legal_moves
-                    
-                    # Weight moves by square importance
-                    central_moves = total_legal_moves & central_squares
-                    regular_moves = total_legal_moves & ~central_squares
-                    
-                    mobility_score += chess.popcount(central_moves) * weight * central_multiplier
-                    mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
+                # Simplified rook mobility: evaluate file control
+                file = chess.square_file(square)
+                file_mask = chess.BB_FILES[file]
+                
+                # Check if file is open (no pawns) or half-open (only enemy pawns)
+                if color == chess.WHITE:
+                    # White rook: check if file is open or half-open for White
+                    white_pawns_on_file = board.pieces(chess.PAWN, chess.WHITE) & file_mask
+                    if not white_pawns_on_file:  # No white pawns on file
+                        black_pawns_on_file = board.pieces(chess.PAWN, chess.BLACK) & file_mask
+                        if not black_pawns_on_file:
+                            # Open file (no pawns)
+                            mobility_score += weight * 8  # High bonus for open file
+                        else:
+                            # Half-open file (only black pawns)
+                            mobility_score += weight * 4  # Moderate bonus for half-open file
                 else:
-                    # Handle integer format
-                    attacks = file_attacks | rank_attacks
-                    legal_moves = attacks & ~friendly_pieces
+                    # Black rook: check if file is open or half-open for Black
+                    black_pawns_on_file = board.pieces(chess.PAWN, chess.BLACK) & file_mask
+                    if not black_pawns_on_file:  # No black pawns on file
+                        white_pawns_on_file = board.pieces(chess.PAWN, chess.WHITE) & file_mask
+                        if not white_pawns_on_file:
+                            # Open file (no pawns)
+                            mobility_score += weight * 8  # High bonus for open file
+                        else:
+                            # Half-open file (only white pawns)
+                            mobility_score += weight * 4  # Moderate bonus for half-open file
                     
-                    # Weight moves by square importance
-                    central_moves = legal_moves & central_squares
-                    regular_moves = legal_moves & ~central_squares
-                    
-                    mobility_score += chess.popcount(central_moves) * weight * central_multiplier
-                    mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
-                    
-            elif piece_type == chess.QUEEN:
-                # Combine diagonal, file, and rank attacks
-                diag_attacks = chess.BB_DIAG_ATTACKS[square]
-                file_attacks = chess.BB_FILE_ATTACKS[square]
-                rank_attacks = chess.BB_RANK_ATTACKS[square]
-                if isinstance(diag_attacks, dict) or isinstance(file_attacks, dict) or isinstance(rank_attacks, dict):
-                    # Handle dictionary format - get exact attack bitboards for current occupancy
-                    diagonal_occupancy = board.occupied & chess.BB_DIAG_MASKS[square]
-                    file_occupancy = board.occupied & chess.BB_FILE_MASKS[square]
-                    rank_occupancy = board.occupied & chess.BB_RANK_MASKS[square]
-                    
-                    diag_legal_moves = 0
-                    file_legal_moves = 0
-                    rank_legal_moves = 0
-                    
-                    if isinstance(diag_attacks, dict) and diagonal_occupancy in diag_attacks:
-                        diag_attack_bitboard = diag_attacks[diagonal_occupancy]
-                        diag_legal_moves = diag_attack_bitboard & ~friendly_pieces
-                    elif not isinstance(diag_attacks, dict):
-                        diag_legal_moves = diag_attacks & ~friendly_pieces
-                    
-                    if isinstance(file_attacks, dict) and file_occupancy in file_attacks:
-                        file_attack_bitboard = file_attacks[file_occupancy]
-                        file_legal_moves = file_attack_bitboard & ~friendly_pieces
-                    elif not isinstance(file_attacks, dict):
-                        file_legal_moves = file_attacks & ~friendly_pieces
-                    
-                    if isinstance(rank_attacks, dict) and rank_occupancy in rank_attacks:
-                        rank_attack_bitboard = rank_attacks[rank_occupancy]
-                        rank_legal_moves = rank_attack_bitboard & ~friendly_pieces
-                    elif not isinstance(rank_attacks, dict):
-                        rank_legal_moves = rank_attacks & ~friendly_pieces
-                    
-                    total_legal_moves = diag_legal_moves | file_legal_moves | rank_legal_moves
-                    
-                    # Weight moves by square importance
-                    central_moves = total_legal_moves & central_squares
-                    regular_moves = total_legal_moves & ~central_squares
-                    
-                    mobility_score += chess.popcount(central_moves) * weight * central_multiplier
-                    mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
-                else:
-                    # Handle integer format
-                    attacks = diag_attacks | file_attacks | rank_attacks
-                    legal_moves = attacks & ~friendly_pieces
-                    
-                    # Weight moves by square importance
-                    central_moves = legal_moves & central_squares
-                    regular_moves = legal_moves & ~central_squares
-                    
-                    mobility_score += chess.popcount(central_moves) * weight * central_multiplier
-                    mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
+
         
         return mobility_score
     
@@ -819,7 +769,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Calculate components
         material_score = self._evaluate_material(board)
-        positional_score = self._evaluate_positional(board)
+        positional_score = self._evaluate_positional(board, is_endgame=True)
         mobility_score = self._evaluate_mobility(board)
         
         # Apply endgame-specific weights
@@ -843,7 +793,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         """
         # Calculate all components
         material_score = self._evaluate_material(board)
-        positional_score = self._evaluate_positional(board)
+        positional_score = self._evaluate_positional(board, is_endgame=False)
         mobility_score = self._evaluate_mobility(board)
         
         # Use cached standard weights for performance
@@ -869,6 +819,8 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def get_description(self) -> str:
         return "Traditional evaluation using material and positional scoring"
+
+
 
 
 class NeuralNetworkEvaluator(BaseEvaluator):

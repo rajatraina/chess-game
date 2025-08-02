@@ -394,18 +394,8 @@ class MinimaxEngine(Engine):
                 return alpha, []
             beta = min(beta, stand_pat)
         
-        # Search captures and checkmate moves
-        captures = []
-        checkmate_moves = []
-        for move in board.legal_moves:
-            if board.is_capture(move):
-                captures.append(move)
-            else:
-                # Check if this move leads to checkmate
-                board.push(move)
-                if board.is_checkmate():
-                    checkmate_moves.append(move)
-                board.pop()
+        # Search only captures for efficiency
+        captures = [move for move in board.legal_moves if board.is_capture(move)]
         
         # Sort captures by MVV-LVA for better pruning
         if captures:
@@ -413,8 +403,7 @@ class MinimaxEngine(Engine):
             capture_values.sort(key=lambda x: x[1], reverse=True)
             captures = [move for move, _ in capture_values]
         
-        # Combine checkmate moves first, then captures
-        moves_to_search = checkmate_moves + captures
+        moves_to_search = captures
         
         best_line = []
         for move in moves_to_search:
