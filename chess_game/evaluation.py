@@ -373,6 +373,9 @@ class HandcraftedEvaluator(BaseEvaluator):
             weighted_material = material_weight * material_score
             weighted_position = positional_weight * positional_score
             weighted_mobility = mobility_weight * mobility_score
+            
+            # No king safety evaluation in endgame
+            weighted_king_safety = 0.0
         else:
             # Use standard evaluation
             material_score = self._evaluate_material(board)
@@ -395,13 +398,18 @@ class HandcraftedEvaluator(BaseEvaluator):
             weighted_material = self.config["material_weight"] * material_score
             weighted_position = self.config["positional_weight"] * positional_score
             weighted_mobility = self.config["mobility_weight"] * mobility_score
+            
+            # Add king safety evaluation for middlegame
+            king_safety_score = self._evaluate_king_safety(board)
+            weighted_king_safety = self.config.get("king_safety_weight", 1.0) * king_safety_score
         
-        total_score = weighted_material + weighted_position + weighted_mobility
+        total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety
         
         return {
             'material': round(weighted_material, 2),
             'position': round(weighted_position, 2),
             'mobility': round(weighted_mobility, 2),
+            'king_safety': round(weighted_king_safety, 2),
             'total': round(total_score, 2)
         }
     
@@ -457,6 +465,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         mobility_score = self._evaluate_mobility(board)
         positional_score += mobility_score
         
+        # Add king safety evaluation only in middlegame
+        if not is_endgame:
+            king_safety_score = self._evaluate_king_safety(board)
+            positional_score += king_safety_score
+        
         return positional_score
     
     def _evaluate_mobility(self, board: chess.Board) -> float:
@@ -478,6 +491,127 @@ class HandcraftedEvaluator(BaseEvaluator):
             mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces, white_pieces)
         
         return mobility_score
+    
+    def _evaluate_king_safety(self, board: chess.Board) -> float:
+        """
+        Evaluate king safety using castling bonus and pawn shield.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            King safety score from White's perspective
+        """
+        king_safety_score = 0
+        
+        # Evaluate castling bonus
+        castling_bonus = self._evaluate_castling_bonus(board)
+        king_safety_score += castling_bonus
+        
+        # Evaluate pawn shield (squares in front of king)
+        pawn_shield_score = self._evaluate_pawn_shield(board)
+        king_safety_score += pawn_shield_score
+        
+        return king_safety_score
+    
+    def _evaluate_castling_bonus(self, board: chess.Board) -> float:
+        """
+        Evaluate castling bonus for both sides.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Castling bonus score from White's perspective
+        """
+        castling_bonus = 0
+        
+        # Check if White has castled
+        white_king_square = board.king(chess.WHITE)
+        if white_king_square is not None:
+            # Kingside castling (g1)
+            if white_king_square == chess.G1:
+                castling_bonus += self.config.get("kingside_castling_bonus", 30)
+            # Queenside castling (c1)
+            elif white_king_square == chess.C1:
+                castling_bonus += self.config.get("queenside_castling_bonus", 25)
+        
+        # Check if Black has castled
+        black_king_square = board.king(chess.BLACK)
+        if black_king_square is not None:
+            # Kingside castling (g8)
+            if black_king_square == chess.G8:
+                castling_bonus -= self.config.get("kingside_castling_bonus", 30)
+            # Queenside castling (c8)
+            elif black_king_square == chess.C8:
+                castling_bonus -= self.config.get("queenside_castling_bonus", 25)
+        
+        return castling_bonus
+    
+    def _evaluate_pawn_shield(self, board: chess.Board) -> float:
+        """
+        Evaluate pawn shield - squares in front of king occupied by friendly pawns.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Pawn shield score from White's perspective
+        """
+        pawn_shield_score = 0
+        
+        # Evaluate White's pawn shield
+        white_king_square = board.king(chess.WHITE)
+        if white_king_square is not None:
+            white_pawn_shield = self._count_pawn_shield(board, white_king_square, chess.WHITE)
+            pawn_shield_score += white_pawn_shield * self.config.get("pawn_shield_weight", 5)
+        
+        # Evaluate Black's pawn shield
+        black_king_square = board.king(chess.BLACK)
+        if black_king_square is not None:
+            black_pawn_shield = self._count_pawn_shield(board, black_king_square, chess.BLACK)
+            pawn_shield_score -= black_pawn_shield * self.config.get("pawn_shield_weight", 5)
+        
+        return pawn_shield_score
+    
+    def _count_pawn_shield(self, board: chess.Board, king_square: int, color: bool) -> int:
+        """
+        Count friendly pawns in the 3 squares in front of the king.
+        
+        Args:
+            board: Current board state
+            king_square: Square where the king is located
+            color: Color of the king (WHITE or BLACK)
+            
+        Returns:
+            Number of friendly pawns in front of the king
+        """
+        king_rank = chess.square_rank(king_square)
+        king_file = chess.square_file(king_square)
+        
+        # Determine which rank is "in front" based on color
+        if color == chess.WHITE:
+            # For White, "in front" means higher ranks (closer to Black's side)
+            front_rank = king_rank + 1
+        else:
+            # For Black, "in front" means lower ranks (closer to White's side)
+            front_rank = king_rank - 1
+        
+        # Check if the front rank is valid
+        if front_rank < 0 or front_rank > 7:
+            return 0
+        
+        # Count pawns in the 3 squares in front of the king
+        pawn_count = 0
+        for file_offset in [-1, 0, 1]:
+            file = king_file + file_offset
+            if 0 <= file <= 7:
+                square = chess.square(file, front_rank)
+                piece = board.piece_at(square)
+                if piece and piece.piece_type == chess.PAWN and piece.color == color:
+                    pawn_count += 1
+        
+        return pawn_count
     
     def _evaluate_piece_mobility(self, board: chess.Board, piece_type: int, color: bool, 
                                 friendly_pieces: int, enemy_pieces: int) -> float:
