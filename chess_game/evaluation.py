@@ -74,6 +74,32 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Cache frequently used config values for performance
         self._cache_config_values()
+        
+        # Store the starting position's piece count for consistent evaluation
+        self.starting_piece_count = None
+    
+    def _set_starting_position(self, board: chess.Board):
+        """
+        Set the starting position for consistent evaluation throughout search.
+        
+        Args:
+            board: The starting position (root position) of the search
+        """
+        self.starting_piece_count = chess.popcount(board.occupied)
+    
+    def _is_endgame_evaluation(self) -> bool:
+        """
+        Determine if we should use endgame evaluation based on starting position.
+        
+        Returns:
+            True if endgame evaluation should be used
+        """
+        # Use starting position piece count if available, otherwise fall back to current position
+        if self.starting_piece_count is not None:
+            return self.starting_piece_count <= 12
+        else:
+            # Fallback for when starting position hasn't been set
+            return True  # Conservative fallback
     
     def _load_config(self, config_file: Optional[str]) -> Dict[str, Any]:
         """Load evaluation configuration"""
@@ -309,8 +335,8 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.halfmove_clock >= 100:  # Fifty-move rule
             return self.config["draw_value"]
         
-        # Check if this is an endgame position
-        is_endgame = self._is_endgame_position(board)
+        # Check if this should use endgame evaluation based on starting position
+        is_endgame = self._is_endgame_evaluation()
         
         if is_endgame:
             return self._evaluate_endgame(board)
@@ -361,8 +387,8 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'total': round(self.config["draw_value"], 2)
             }
         
-        # Check if this is an endgame position
-        is_endgame = self._is_endgame_position(board)
+        # Check if this should use endgame evaluation based on starting position
+        is_endgame = self._is_endgame_evaluation()
         
         if is_endgame:
             # Use cached endgame weights for performance
@@ -443,9 +469,9 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _evaluate_positional(self, board: chess.Board, is_endgame: bool = None) -> float:
         """Evaluate positional factors using optimized piece-square tables and mobility"""
-        # Check if this is an endgame position (only if not provided)
+        # Check if this should use endgame evaluation based on starting position (only if not provided)
         if is_endgame is None:
-            is_endgame = self._is_endgame_position(board)
+            is_endgame = self._is_endgame_evaluation()
         
         # Choose appropriate piece-square tables
         tables = self.endgame_piece_square_tables if is_endgame else self.piece_square_tables
@@ -498,7 +524,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         Mobility is less important in endgames, so we can skip it entirely.
         """
         # Skip mobility evaluation for endgames
-        if self._is_endgame_position(board):
+        if self._is_endgame_evaluation():
             return 0.0
         
         # Use full evaluation for middlegame positions

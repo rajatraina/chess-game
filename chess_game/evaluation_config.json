@@ -17,7 +17,7 @@
         "positional_weight": 1.5,
         "mobility_weight": 0.1
     },
-    "endgame_search_depth": 6,
+    "endgame_search_depth": 4,
     "piece_values": {
         "pawn": 100,
         "knight": 320,

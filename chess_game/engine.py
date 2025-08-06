@@ -81,6 +81,10 @@ class MinimaxEngine(Engine):
         Returns:
             Best move found by the search
         """
+        # Set the starting position for consistent evaluation throughout search
+        if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
+            self.evaluation_manager.evaluator._set_starting_position(board)
+        
         # Check if this is an endgame position for deeper search
         is_endgame = self._is_endgame_position(board)
         search_depth = self.depth
@@ -194,6 +198,27 @@ class MinimaxEngine(Engine):
         
         # Leaf node: evaluate position
         if depth == 0:
+            # Check if position is in tablebase for perfect evaluation
+            if self.tablebase and self.is_tablebase_position(board):
+                try:
+                    wdl = self.tablebase.get_wdl(board)
+                    if wdl is not None:
+                        # Convert WDL to evaluation score
+                        # WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
+                        if wdl == 2:  # Win
+                            return 100000, []
+                        elif wdl == 1:  # Cursed win
+                            return 50000, []
+                        elif wdl == 0:  # Draw
+                            return 0, []
+                        elif wdl == -1:  # Blessed loss
+                            return -50000, []
+                        elif wdl == -2:  # Loss
+                            return -100000, []
+                except Exception:
+                    # Fall back to quiescence if tablebase lookup fails
+                    pass
+            
             return self._quiescence(board, alpha, beta)
         
         # Base case: game over
@@ -380,6 +405,27 @@ class MinimaxEngine(Engine):
         quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_depth_limit", 10)
         if depth > quiescence_depth_limit:
             return self.evaluate(board), []
+        
+        # Check if position is in tablebase for perfect evaluation
+        if self.tablebase and self.is_tablebase_position(board):
+            try:
+                wdl = self.tablebase.get_wdl(board)
+                if wdl is not None:
+                    # Convert WDL to evaluation score
+                    # WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
+                    if wdl == 2:  # Win
+                        return 100000, []
+                    elif wdl == 1:  # Cursed win
+                        return 50000, []
+                    elif wdl == 0:  # Draw
+                        return 0, []
+                    elif wdl == -1:  # Blessed loss
+                        return -50000, []
+                    elif wdl == -2:  # Loss
+                        return -100000, []
+            except Exception:
+                # Fall back to standard evaluation if tablebase lookup fails
+                pass
             
         # Evaluate current position (stand pat)
         stand_pat = self.evaluate_cached(board)
