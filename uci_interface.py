@@ -9,114 +9,53 @@ import chess
 import chess.engine
 import time
 import signal
+import os
+from datetime import datetime
 from typing import Optional, List, Tuple
 
 # Add the chess_game directory to the path
 sys.path.append('chess_game')
 from engine import MinimaxEngine
 
-class TimeoutEngine(MinimaxEngine):
-    """Engine with timeout protection and heartbeat pings"""
+class LoggingEngine(MinimaxEngine):
+    """Engine wrapper that logs search details to file"""
     
-    def __init__(self, depth=4, max_time=30, **kwargs):
-        super().__init__(depth, quiet=True, **kwargs)  # Enable quiet mode for UCI
-        self.max_time = max_time
+    def __init__(self, depth=4, quiet=True, log_callback=None, **kwargs):
+        super().__init__(depth, quiet=True, **kwargs)  # Always quiet for UCI
+        self.log_callback = log_callback
         self.search_start_time = 0
-        self.last_heartbeat = 0
-        self.heartbeat_interval = 2.0  # Send heartbeat every 2 seconds
-        # Track best move found so far for timeout fallback
         self.best_move_found = None
         self.best_value_found = None
         self.best_line_found = []
         
     def get_move(self, board):
-        """Get move with timeout protection and heartbeat pings"""
+        """Get move with detailed logging"""
         self.search_start_time = time.time()
-        self.last_heartbeat = self.search_start_time
-        
-        # Reset best move tracking
         self.best_move_found = None
         self.best_value_found = None
         self.best_line_found = []
         
-        # Set up timeout handler
-        def timeout_handler(signum, frame):
-            raise TimeoutError("Search timed out")
+        if self.log_callback:
+            self.log_callback(f"Starting search (depth {self.depth})")
+            self.log_callback(f"Position: {board.fen()}")
+            self.log_callback(f"Legal moves: {len(list(board.legal_moves))}")
         
-        # Set timeout (Unix systems only)
-        if hasattr(signal, 'SIGALRM'):
-            signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(int(self.max_time))
+        # Call the parent method but intercept the search process
+        move = self._get_move_with_logging(board)
         
-        try:
-            # Print debug message when search starts (proper UCI info command)
-            print(f"info string Starting search (depth {self.depth}, max time {self.max_time}s)")
-            
-            # Use our custom get_move_with_tracking instead of the base class method
-            move = self._get_move_with_tracking(board)
-            
-            # Validate the returned move
-            if move is not None and move not in board.legal_moves:
-                print(f"info string WARNING: Illegal move {move.uci()} generated, using fallback")
-                legal_moves = list(board.legal_moves)
-                if legal_moves:
-                    return legal_moves[0]
-                return None
-            
-            return move
-        except TimeoutError:
-            # Return the best move found so far, or first legal move as fallback
-            if self.best_move_found is not None:
-                print(f"info string Search timed out after {self.max_time}s, using best move found so far (value: {self.best_value_found:.1f})")
-                
-                # Validate the best move found
-                if self.best_move_found in board.legal_moves:
-                    return self.best_move_found
-                else:
-                    print(f"info string WARNING: Best move {self.best_move_found.uci()} is illegal, using fallback")
-                    legal_moves = list(board.legal_moves)
-                    if legal_moves:
-                        return legal_moves[0]
-                    return None
-            else:
-                print(f"info string Search timed out after {self.max_time}s, using fallback move")
-                legal_moves = list(board.legal_moves)
-                if legal_moves:
-                    return legal_moves[0]
-                return None
-        finally:
-            # Cancel alarm
-            if hasattr(signal, 'SIGALRM'):
-                signal.alarm(0)
+        if self.log_callback and move:
+            search_time = time.time() - self.search_start_time
+            self.log_callback(f"Search completed in {search_time:.2f}s")
+            self.log_callback(f"Best move: {board.san(move)} (value: {self.best_value_found:.1f})")
+            self.log_callback(f"Principal variation: {' '.join([board.san(m) for m in self.best_line_found[:5]])}")
+            self.log_callback(f"Nodes searched: {self.nodes_searched}")
+            self.log_callback(f"Speed: {self.nodes_searched/search_time:.0f} nodes/s")
+            self.log_callback("-" * 50)
+        
+        return move
     
-    def _minimax(self, board, depth, alpha, beta, variation=None):
-        """Minimax with time checking and heartbeat pings"""
-        # Check if we're running out of time
-        elapsed = time.time() - self.search_start_time
-        if elapsed > self.max_time * 0.8:  # Stop at 80% of time limit
-            raise TimeoutError("Search taking too long")
-        
-        # Send heartbeat if enough time has passed
-        if elapsed - self.last_heartbeat > self.heartbeat_interval:
-            print(f"info string Search in progress... ({elapsed:.1f}s elapsed, depth {depth})")
-            self.last_heartbeat = elapsed
-        
-        return super()._minimax(board, depth, alpha, beta, variation)
-    
-    def _quiescence(self, board, alpha, beta, depth=0):
-        """Quiescence with time checking"""
-        # Check if we're running out of time
-        elapsed = time.time() - self.search_start_time
-        if elapsed > self.max_time * 0.8:
-            raise TimeoutError("Quiescence taking too long")
-        
-        return super()._quiescence(board, alpha, beta, depth)
-    
-    def _get_move_with_tracking(self, board):
-        """
-        Custom get_move method that tracks the best move found so far.
-        This allows us to return the best move found when a timeout occurs.
-        """
+    def _get_move_with_logging(self, board):
+        """Custom get_move with detailed logging"""
         # Create a copy of the board to avoid corrupting the original
         board_copy = board.copy()
         
@@ -131,7 +70,8 @@ class TimeoutEngine(MinimaxEngine):
         if is_endgame:
             endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
             search_depth = max(self.depth, endgame_depth)
-            print(f"info string Endgame detected - using depth {search_depth}")
+            if self.log_callback:
+                self.log_callback(f"Endgame detected - using depth {search_depth}")
         
         best_move = None
         # Initialize best_value based on whose turn it is
@@ -143,21 +83,25 @@ class TimeoutEngine(MinimaxEngine):
         
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board_copy):
-            print(f"info string Checking tablebase for {sum(len(board_copy.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])} pieces...")
+            piece_count = sum(len(board_copy.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])
+            if self.log_callback:
+                self.log_callback(f"Checking tablebase for {piece_count} pieces...")
             tablebase_move = self.get_tablebase_move(board_copy)
             if tablebase_move:
-                print(f"info string Using tablebase move: {board_copy.san(tablebase_move)}")
+                if self.log_callback:
+                    self.log_callback(f"Using tablebase move: {board_copy.san(tablebase_move)}")
                 return tablebase_move
             else:
-                print(f"info string Tablebase lookup failed, using standard search")
+                if self.log_callback:
+                    self.log_callback("Tablebase lookup failed, using standard search")
         
         # Start timing the search and reset node counter
         start_time = time.time()
         self.search_start_time = start_time
         self.nodes_searched = 0
         
-        # Report search start
-        print(f"info string Analyzing {len(list(board_copy.legal_moves))} legal moves...")
+        if self.log_callback:
+            self.log_callback(f"Analyzing {len(list(board_copy.legal_moves))} legal moves...")
         
         # Evaluate all legal moves
         for move in board_copy.legal_moves:
@@ -186,7 +130,8 @@ class TimeoutEngine(MinimaxEngine):
                     self.best_value_found = best_value
                     self.best_line_found = best_line
                     # Report new best move
-                    print(f"info string New best move: {board_copy.san(move)} (value: {value:.1f})")
+                    if self.log_callback:
+                        self.log_callback(f"New best move: {board_copy.san(move)} (value: {value:.1f})")
                 alpha = max(alpha, value)
             else:  # Black to move: pick lowest evaluation
                 if value < best_value:
@@ -198,14 +143,9 @@ class TimeoutEngine(MinimaxEngine):
                     self.best_value_found = best_value
                     self.best_line_found = best_line
                     # Report new best move
-                    print(f"info string New best move: {board_copy.san(move)} (value: {value:.1f})")
+                    if self.log_callback:
+                        self.log_callback(f"New best move: {board_copy.san(move)} (value: {value:.1f})")
                 beta = min(beta, value)
-        
-        # Report final search results
-        if best_move:
-            search_time = time.time() - start_time
-            nodes_per_second = self.nodes_searched / search_time if search_time > 0 else 0
-            print(f"info string Search completed in {search_time:.2f}s | Best: {board_copy.san(best_move)} ({best_value:.1f}) | Speed: {nodes_per_second:.0f} nodes/s")
         
         return best_move
 
@@ -213,10 +153,26 @@ class UCIEngine:
     """UCI-compatible wrapper for the chess engine"""
     
     def __init__(self):
-        self.engine = TimeoutEngine(depth=4, max_time=30)
         self.board = chess.Board()
         self.thinking_time = 1000  # milliseconds
         self.depth_limit = 6
+        self.log_file = "LICHESS-LOG.txt"
+        self.move_number = 0
+        # Initialize logging engine with callback
+        self.engine = LoggingEngine(depth=4, log_callback=self.log)
+        
+    def log(self, message: str):
+        """Log message to file with timestamp"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_entry = f"[{timestamp}] {message}"
+        
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(log_entry + "\n")
+                f.flush()  # Ensure immediate write
+        except Exception as e:
+            # If logging fails, don't crash the engine
+            pass
         
     def run(self):
         """Main UCI loop"""
@@ -270,7 +226,7 @@ class UCIEngine:
                 if option_name == "Depth":
                     try:
                         self.depth_limit = int(value)
-                        self.engine = TimeoutEngine(depth=self.depth_limit, max_time=self.engine.max_time)
+                        self.engine = LoggingEngine(depth=self.depth_limit, log_callback=self.log)
                     except ValueError:
                         pass
                 elif option_name == "ThinkingTime":
@@ -326,25 +282,14 @@ class UCIEngine:
                 depth = int(parts[i + 1])
             i += 2
         
-        # Check if this is the first move (starting position with no moves played)
-        is_first_move = (self.board.fen().split()[0] == "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR" and 
-                        self.board.fullmove_number == 1)
+        # Update engine with new depth
+        self.engine = LoggingEngine(depth=depth, log_callback=self.log)
         
-        # Calculate thinking time
-        if is_first_move:
-            # Use 60 seconds for the first move
-            thinking_time = 60000
-            print(f"info string First move detected - using 60 second timeout")
-        elif wtime is not None and btime is not None:
-            time_limit = wtime if self.board.turn else btime
-            # Use 33% of remaining time with minimum 5 seconds
-            thinking_time = max(5000, int(time_limit * 0.33))
-        else:
-            thinking_time = self.thinking_time
-        
-        # Update engine with new depth and time limit
-        max_time_seconds = thinking_time / 1000.0
-        self.engine = TimeoutEngine(depth=depth, max_time=max_time_seconds)
+        # Increment move number and log move start
+        self.move_number += 1
+        self.log(f"=== MOVE {self.move_number} ===")
+        self.log(f"Side to move: {'White' if self.board.turn else 'Black'}")
+        self.log(f"Search depth: {depth}")
         
         # Find best move
         start_time = time.time()

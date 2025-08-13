@@ -6,7 +6,7 @@
     "mobility_weights": {
         "knight": 3,
         "bishop": 4,
-        "rook": 4
+        "rook": 2
     },
     "mobility_quality_weights": {
         "central_squares_multiplier": 1.0,

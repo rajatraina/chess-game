@@ -546,10 +546,6 @@ class HandcraftedEvaluator(BaseEvaluator):
         castling_bonus = self._evaluate_castling_bonus(board)
         king_safety_score += castling_bonus
         
-        # Evaluate pawn shield (squares in front of king)
-        pawn_shield_score = self._evaluate_pawn_shield(board)
-        king_safety_score += pawn_shield_score
-        
         return king_safety_score
     
     def _evaluate_castling_bonus(self, board: chess.Board) -> float:
@@ -618,7 +614,7 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _count_pawn_shield(self, board: chess.Board, king_square: int, color: bool) -> int:
         """
-        Count friendly pawns in the 3 squares in front of the king.
+        Count friendly pawns in the 3 files closest to the king (a-c or f-h).
         
         Args:
             board: Current board state
@@ -626,29 +622,30 @@ class HandcraftedEvaluator(BaseEvaluator):
             color: Color of the king (WHITE or BLACK)
             
         Returns:
-            Number of friendly pawns in front of the king
+            Number of friendly pawns in the 3 files closest to the king
         """
-        king_rank = chess.square_rank(king_square)
         king_file = chess.square_file(king_square)
         
-        # Determine which rank is "in front" based on color
-        if color == chess.WHITE:
-            # For White, "in front" means higher ranks (closer to Black's side)
-            front_rank = king_rank + 1
-        else:
-            # For Black, "in front" means lower ranks (closer to White's side)
-            front_rank = king_rank - 1
+        # Determine which 3 files are closest to the king
+        if king_file <= 2:  # King is on a, b, or c file (queenside)
+            # Use files a, b, c (0, 1, 2)
+            shield_files = [0, 1, 2]
+        elif king_file >= 5:  # King is on f, g, or h file (kingside)
+            # Use files f, g, h (5, 6, 7)
+            shield_files = [5, 6, 7]
+        else:  # King is on d or e file (center)
+            # Use the 3 files closest to the king
+            if king_file == 3:  # d file
+                shield_files = [2, 3, 4]  # c, d, e
+            else:  # e file
+                shield_files = [3, 4, 5]  # d, e, f
         
-        # Check if the front rank is valid
-        if front_rank < 0 or front_rank > 7:
-            return 0
-        
-        # Count pawns in the 3 squares in front of the king
+        # Count pawns in the 3 closest files
         pawn_count = 0
-        for file_offset in [-1, 0, 1]:
-            file = king_file + file_offset
-            if 0 <= file <= 7:
-                square = chess.square(file, front_rank)
+        for file in shield_files:
+            # Check all ranks for pawns in this file
+            for rank in range(8):
+                square = chess.square(file, rank)
                 piece = board.piece_at(square)
                 if piece and piece.piece_type == chess.PAWN and piece.color == color:
                     pawn_count += 1
