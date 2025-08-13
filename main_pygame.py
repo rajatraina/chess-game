@@ -45,7 +45,7 @@ if __name__ == "__main__":
         if args.quick:
             # Quick speed test
             try:
-                from speed_test import SpeedTester
+                from tests.speed_test import SpeedTester
                 tester = SpeedTester()
                 tester.run_quick_benchmark()
             except ImportError as e:
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         else:
             # Full speed test
             try:
-                from speed_test import SpeedTester
+                from tests.speed_test import SpeedTester
                 tester = SpeedTester()
                 tester.run_comprehensive_benchmark()
             except ImportError as e:

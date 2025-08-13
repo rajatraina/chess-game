@@ -34,10 +34,11 @@ class MinimaxEngine(Engine):
     - Black's turn: minimize evaluation (find best move for Black)
     """
     
-    def __init__(self, depth=6, evaluator_type="handcrafted", evaluator_config=None):
+    def __init__(self, depth=6, evaluator_type="handcrafted", evaluator_config=None, quiet=False):
         self.depth = depth
         self.nodes_searched = 0
         self.search_start_time = 0
+        self.quiet = quiet  # Control debug output
         
         # Initialize evaluation system with config file by default
         if evaluator_config is None:
@@ -68,7 +69,8 @@ class MinimaxEngine(Engine):
             self.tablebase = None
             
         except Exception as e:
-            print(f"⚠️  Could not initialize tablebase: {e}")
+            if not self.quiet:
+                print(f"⚠️  Could not initialize tablebase: {e}")
             self.tablebase = None
 
     def get_move(self, board):
@@ -92,7 +94,8 @@ class MinimaxEngine(Engine):
         if is_endgame:
             endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
             search_depth = max(self.depth, endgame_depth)
-            print(f"🎯 Endgame detected - using depth {search_depth}")
+            if not self.quiet:
+                print(f"🎯 Endgame detected - using depth {search_depth}")
         best_move = None
         # Initialize best_value based on whose turn it is
         # White wants to maximize (highest value), Black wants to minimize (lowest value)
@@ -101,18 +104,22 @@ class MinimaxEngine(Engine):
         alpha = -float('inf')
         beta = float('inf')
         
-        print(f"\n🤔 Engine thinking (depth {search_depth})...")
-        print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
+        if not self.quiet:
+            print(f"\n🤔 Engine thinking (depth {search_depth})...")
+            print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
         
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board):
-            print(f"🔍 Checking tablebase for position with {sum(len(board.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])} pieces")
+            if not self.quiet:
+                print(f"🔍 Checking tablebase for position with {sum(len(board.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])} pieces")
             tablebase_move = self.get_tablebase_move(board)
             if tablebase_move:
-                print(f"🎯 Using tablebase move: {board.san(tablebase_move)}")
+                if not self.quiet:
+                    print(f"🎯 Using tablebase move: {board.san(tablebase_move)}")
                 return tablebase_move
             else:
-                print("⚠️  Tablebase lookup failed, using standard search")
+                if not self.quiet:
+                    print("⚠️  Tablebase lookup failed, using standard search")
         
         # Start timing the search and reset node counter
         start_time = time.time()
@@ -152,7 +159,8 @@ class MinimaxEngine(Engine):
         search_time = time.time() - start_time
         nodes_per_second = self.nodes_searched / search_time if search_time > 0 else 0
         
-        print(f"⏱️ Search completed in {search_time:.2f}s")
+        if not self.quiet:
+            print(f"⏱️ Search completed in {search_time:.2f}s")
         
         # Print the best move found with component evaluation
         if best_move:
@@ -171,8 +179,9 @@ class MinimaxEngine(Engine):
                 pv_board.push(move)
             final_components = self.evaluate_with_components(pv_board)
             
-            print(f"🏆 Best: {pv_san[0]} ({best_value:.1f}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
-            print(f"📊 (Material: {final_components['material']}, Position: {final_components['position']}, Mobility: {final_components['mobility']})")
+            if not self.quiet:
+                print(f"🏆 Best: {pv_san[0]} ({best_value:.1f}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
+                print(f"📊 (Material: {final_components['material']}, Position: {final_components['position']}, Mobility: {final_components['mobility']})")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
@@ -440,16 +449,25 @@ class MinimaxEngine(Engine):
                 return alpha, []
             beta = min(beta, stand_pat)
         
-        # Search only captures for efficiency
-        captures = [move for move in board.legal_moves if board.is_capture(move)]
+        # Search captures and checks for better tactical accuracy
+        captures = []
+        checks = []
         
-        # Sort captures by MVV-LVA for better pruning
-        if captures:
-            capture_values = [(move, self._get_capture_value(board, move)) for move in captures]
-            capture_values.sort(key=lambda x: x[1], reverse=True)
-            captures = [move for move, _ in capture_values]
+        # Check if we should include checks in quiescence search
+        include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
         
-        moves_to_search = captures
+        for move in board.legal_moves:
+            if board.is_capture(move):
+                captures.append(move)
+            elif include_checks:
+                # Check if move gives check
+                board.push(move)
+                if board.is_check():
+                    checks.append(move)
+                board.pop()
+        
+        # Combine captures first, then checks (no sorting)
+        moves_to_search = captures + checks
         
         best_line = []
         for move in moves_to_search:
@@ -508,6 +526,8 @@ class MinimaxEngine(Engine):
         # MVV-LVA: Most Valuable Victim - Least Valuable Attacker
         # Higher values = more promising captures
         return piece_values[victim_piece.piece_type] * 10 - piece_values[attacker_piece.piece_type]
+    
+
     
     def _get_sorted_moves_optimized(self, board):
         """
@@ -607,7 +627,8 @@ class MinimaxEngine(Engine):
         
         # Evaluate the position
         eval_after = self.evaluate(board)
-        print(f"📊 Evaluation after move: {eval_after}")
+        if not self.quiet:
+            print(f"📊 Evaluation after move: {eval_after}")
         
         # Undo the move
         board.pop()
@@ -627,22 +648,25 @@ class MinimaxEngine(Engine):
         """Get the best move from tablebase if available"""
         try:
             if not self.tablebase:
-                print("⚠️  No tablebase available")
+                if not self.quiet:
+                    print("⚠️  No tablebase available")
                 return None
             
             # Get tablebase information for current position
             wdl = self.tablebase.get_wdl(board)
             if wdl is None:
-                print("⚠️  Position not found in tablebase")
+                if not self.quiet:
+                    print("⚠️  Position not found in tablebase")
                 return None
             
             # WDL values: 2 = win, 1 = cursed win, 0 = draw, -1 = blessed loss, -2 = loss
             wdl_names = {2: "Win", 1: "Cursed Win", 0: "Draw", -1: "Blessed Loss", -2: "Loss"}
-            print(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
+            if not self.quiet:
+                print(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
             
             # Get DTZ for current position to understand the fastest path
             dtz = self.tablebase.get_dtz(board)
-            if dtz is not None:
+            if dtz is not None and not self.quiet:
                 print(f"📊 Tablebase: DTZ={dtz} (Distance To Zero)")
             
             # Find the best move by trying each legal move
@@ -650,7 +674,8 @@ class MinimaxEngine(Engine):
             best_wdl = None
             best_dtz = None
             
-            print(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
+            if not self.quiet:
+                print(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
             
             moves_checked = 0
             for move in board.legal_moves:
@@ -699,20 +724,25 @@ class MinimaxEngine(Engine):
                     else:
                         print(f"  ❌ {move_san}: Not found in tablebase")
                 except Exception as e:
-                    print(f"⚠️  Error checking move {move_san}: {e}")
+                    if not self.quiet:
+                        print(f"⚠️  Error checking move {move_san}: {e}")
                 board.pop()
             
-            print(f"📊 Checked {moves_checked} moves in tablebase")
+            if not self.quiet:
+                print(f"📊 Checked {moves_checked} moves in tablebase")
             
             if best_move:
                 best_move_san = board.san(best_move)
                 side_to_move = "White" if board.turn else "Black"
-                print(f"🎯 Tablebase best move for {side_to_move}: {best_move_san} (WDL={best_wdl} - {wdl_names.get(best_wdl, 'Unknown')}, DTZ={best_dtz})")
+                if not self.quiet:
+                    print(f"🎯 Tablebase best move for {side_to_move}: {best_move_san} (WDL={best_wdl} - {wdl_names.get(best_wdl, 'Unknown')}, DTZ={best_dtz})")
             else:
-                print("⚠️  No best move found in tablebase")
+                if not self.quiet:
+                    print("⚠️  No best move found in tablebase")
             
             return best_move
             
         except Exception as e:
-            print(f"⚠️  Tablebase error: {e}")
+            if not self.quiet:
+                print(f"⚠️  Tablebase error: {e}")
             return None 
