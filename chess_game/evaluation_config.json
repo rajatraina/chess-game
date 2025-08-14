@@ -17,7 +17,8 @@
         "positional_weight": 1.5,
         "mobility_weight": 0.1
     },
-    "endgame_search_depth": 4,
+    "search_depth": 2,
+    "endgame_search_depth": 3,
     "piece_values": {
         "pawn": 100,
         "knight": 320,
@@ -34,5 +35,5 @@
     "queenside_castling_bonus": 25,
     "pawn_shield_weight": 5,
     "king_safety_weight": 1.0,
-    "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety"
+    "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
 } 

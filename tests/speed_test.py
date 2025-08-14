@@ -37,8 +37,8 @@ class SpeedTester:
         print("🏁 CHESS ENGINE SPEED BENCHMARK")
         print("=" * 50)
         
-        # Test different depths
-        depths = [2, 3, 4, 5]
+        # Test different depths (limited to depth 4 for speed)
+        depths = [2, 3, 4]
         
         # Test different evaluator types
         evaluator_types = ["handcrafted"]
@@ -47,8 +47,8 @@ class SpeedTester:
             print(f"\n🔧 Testing {evaluator_type.upper()} evaluator")
             print("-" * 30)
             
-            # Create engine with current evaluator
-            engine = MinimaxEngine(depth=4, evaluator_type=evaluator_type)
+            # Create engine with current evaluator (use config file depth)
+            engine = MinimaxEngine(evaluator_type=evaluator_type)
             
             # Suppress engine output during benchmarks
             original_verbose = getattr(engine, 'verbose', False)
@@ -66,7 +66,7 @@ class SpeedTester:
                 self._benchmark_move_generation(engine)
                 
                 # Test position-specific performance
-                self._benchmark_position_performance(engine, depths[:3])  # Use smaller depths for position tests
+                self._benchmark_position_performance(engine, depths)  # Test all depths (2, 3, 4)
                 
             finally:
                 # Restore original verbose setting
@@ -252,7 +252,7 @@ class SpeedTester:
         print("=" * 40)
         
         # Create engine
-        engine = MinimaxEngine(depth=4, evaluator_type="handcrafted")
+        engine = MinimaxEngine(evaluator_type="handcrafted")  # Use config file depth
         
         # Suppress engine output during benchmarks
         original_verbose = getattr(engine, 'verbose', False)

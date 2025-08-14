@@ -20,7 +20,7 @@ from engine import MinimaxEngine
 class LoggingEngine(MinimaxEngine):
     """Engine wrapper that logs search details to file"""
     
-    def __init__(self, depth=4, quiet=True, log_callback=None, **kwargs):
+    def __init__(self, depth=None, quiet=True, log_callback=None, **kwargs):
         super().__init__(depth, quiet=True, **kwargs)  # Always quiet for UCI
         self.log_callback = log_callback
         self.search_start_time = 0
@@ -159,7 +159,7 @@ class UCIEngine:
         self.log_file = "LICHESS-LOG.txt"
         self.move_number = 0
         # Initialize logging engine with callback
-        self.engine = LoggingEngine(depth=4, log_callback=self.log)
+        self.engine = LoggingEngine(log_callback=self.log)  # Use config file depth
         
     def log(self, message: str):
         """Log message to file with timestamp"""

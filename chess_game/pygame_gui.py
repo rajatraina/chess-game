@@ -25,7 +25,7 @@ class PygameChessGUI:
         self.images = {}
         self.selected_square = None
         self.game_mode = "human_vs_computer"
-        self.engine = MinimaxEngine(depth=4, evaluator_type="handcrafted")
+        self.engine = MinimaxEngine(evaluator_type="handcrafted")  # Use config file depth
         
         # Computer vs Computer mode tracking
         self.computer_vs_computer_mode = False

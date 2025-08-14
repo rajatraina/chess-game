@@ -3,10 +3,30 @@ import chess
 import chess.syzygy
 import time
 import os
+import zlib
 try:
     from .evaluation import EvaluationManager, create_evaluator
 except ImportError:
     from evaluation import EvaluationManager, create_evaluator
+
+# Transposition table entry types
+EXACT = 0
+LOWER_BOUND = 1
+UPPER_BOUND = 2
+
+class TranspositionTableEntry:
+    """Represents a single entry in the transposition table"""
+    def __init__(self, hash_key, depth, score, best_move, node_type, age):
+        self.hash_key = hash_key
+        self.depth = depth
+        self.score = score
+        self.best_move = best_move
+        self.node_type = node_type  # EXACT, LOWER_BOUND, UPPER_BOUND
+        self.age = age
+    
+    def __str__(self):
+        node_type_str = {EXACT: "EXACT", LOWER_BOUND: "LOWER", UPPER_BOUND: "UPPER"}[self.node_type]
+        return f"TT[{self.hash_key:016x}] d={self.depth} s={self.score} m={self.best_move} t={node_type_str} a={self.age}"
 
 class Engine:
     """Base class for chess engines"""
@@ -34,8 +54,7 @@ class MinimaxEngine(Engine):
     - Black's turn: minimize evaluation (find best move for Black)
     """
     
-    def __init__(self, depth=6, evaluator_type="handcrafted", evaluator_config=None, quiet=False):
-        self.depth = depth
+    def __init__(self, depth=None, evaluator_type="handcrafted", evaluator_config=None, quiet=False):
         self.nodes_searched = 0
         self.search_start_time = 0
         self.quiet = quiet  # Control debug output
@@ -46,6 +65,12 @@ class MinimaxEngine(Engine):
         
         self.evaluation_manager = EvaluationManager(evaluator_type, **(evaluator_config or {}))
         
+        # Set search depth from config file if not explicitly provided
+        if depth is None:
+            self.depth = self.evaluation_manager.evaluator.config.get("search_depth", 4)
+        else:
+            self.depth = depth
+        
         # Initialize Syzygy tablebase if available
         self.tablebase = None
         self.init_tablebase()
@@ -54,6 +79,165 @@ class MinimaxEngine(Engine):
         self.eval_cache = {}
         self.cache_hits = 0
         self.cache_misses = 0
+        
+        # Transposition table
+        self.transposition_table = {}
+        self.tt_hits = 0
+        self.tt_misses = 0
+        self.tt_cutoffs = 0
+        self.search_age = 0
+        
+        # TT configuration
+        self.tt_size_limit = 1000000  # Maximum number of entries
+        self.tt_enabled = True
+        
+        # Initialize Zobrist hash for transposition table
+        self._init_zobrist_hash()
+    
+    def _init_zobrist_hash(self):
+        """Initialize Zobrist hash tables for efficient position hashing"""
+        import random
+        random.seed(42)  # For reproducible hashes
+        
+        # Piece-square hash table
+        self.zobrist_pieces = {}
+        for piece_type in chess.PIECE_TYPES:
+            for color in [chess.WHITE, chess.BLACK]:
+                for square in chess.SQUARES:
+                    self.zobrist_pieces[(piece_type, color, square)] = random.getrandbits(64)
+        
+        # Castling rights hash table - iterate through all possible castling combinations
+        self.zobrist_castling = {}
+        for i in range(16):  # 4 bits for castling rights (KQkq)
+            self.zobrist_castling[i] = random.getrandbits(64)
+        
+        # En passant square hash table
+        self.zobrist_en_passant = {}
+        for square in chess.SQUARES:
+            self.zobrist_en_passant[square] = random.getrandbits(64)
+        
+        # Side to move hash
+        self.zobrist_side = random.getrandbits(64)
+    
+    def _get_zobrist_hash(self, board):
+        """Generate Zobrist hash for the current board position"""
+        hash_key = 0
+        
+        # Hash pieces
+        for square in chess.SQUARES:
+            piece = board.piece_at(square)
+            if piece is not None:
+                hash_key ^= self.zobrist_pieces[(piece.piece_type, piece.color, square)]
+        
+        # Hash castling rights - convert to integer index
+        castling_index = 0
+        if board.has_kingside_castling_rights(chess.WHITE):
+            castling_index |= 1
+        if board.has_queenside_castling_rights(chess.WHITE):
+            castling_index |= 2
+        if board.has_kingside_castling_rights(chess.BLACK):
+            castling_index |= 4
+        if board.has_queenside_castling_rights(chess.BLACK):
+            castling_index |= 8
+        hash_key ^= self.zobrist_castling[castling_index]
+        
+        # Hash en passant square
+        if board.ep_square is not None:
+            hash_key ^= self.zobrist_en_passant[board.ep_square]
+        
+        # Hash side to move
+        if board.turn:
+            hash_key ^= self.zobrist_side
+        
+        return hash_key
+    
+    def _store_transposition(self, board, depth, score, best_move, node_type):
+        """Store a position in the transposition table"""
+        if not self.tt_enabled:
+            return
+        
+        hash_key = self._get_zobrist_hash(board)
+        
+        # Create new entry
+        entry = TranspositionTableEntry(hash_key, depth, score, best_move, node_type, self.search_age)
+        
+        # Replace existing entry or add new one
+        self.transposition_table[hash_key] = entry
+        
+        # Manage table size
+        if len(self.transposition_table) > self.tt_size_limit:
+            self._cleanup_transposition_table()
+    
+    def _probe_transposition(self, board, depth, alpha, beta):
+        """Probe the transposition table for a position"""
+        if not self.tt_enabled:
+            return None, None, None
+        
+        hash_key = self._get_zobrist_hash(board)
+        
+        if hash_key not in self.transposition_table:
+            self.tt_misses += 1
+            return None, None, None
+        
+        entry = self.transposition_table[hash_key]
+        self.tt_hits += 1
+        
+        # Check if the stored entry is deep enough
+        if entry.depth >= depth:
+            score = entry.score
+            best_move = entry.best_move
+            
+            if entry.node_type == EXACT:
+                return score, best_move, entry.node_type
+            elif entry.node_type == LOWER_BOUND and score >= beta:
+                self.tt_cutoffs += 1
+                return score, best_move, entry.node_type
+            elif entry.node_type == UPPER_BOUND and score <= alpha:
+                self.tt_cutoffs += 1
+                return score, best_move, entry.node_type
+        
+        return None, entry.best_move, None  # Return best move for move ordering even if score not usable
+    
+    def _cleanup_transposition_table(self):
+        """Clean up transposition table by removing old entries"""
+        if len(self.transposition_table) <= self.tt_size_limit:
+            return
+        
+        # Remove entries older than current search age - 2
+        cutoff_age = max(0, self.search_age - 2)
+        keys_to_remove = []
+        
+        for hash_key, entry in self.transposition_table.items():
+            if entry.age < cutoff_age:
+                keys_to_remove.append(hash_key)
+        
+        # Remove old entries
+        for key in keys_to_remove:
+            del self.transposition_table[key]
+        
+        # If still too large, remove random entries
+        if len(self.transposition_table) > self.tt_size_limit:
+            keys = list(self.transposition_table.keys())
+            keys_to_remove = random.sample(keys, len(keys) // 4)  # Remove 25%
+            for key in keys_to_remove:
+                del self.transposition_table[key]
+    
+    def get_transposition_stats(self):
+        """Get transposition table statistics"""
+        total_probes = self.tt_hits + self.tt_misses
+        hit_rate = (self.tt_hits / total_probes * 100) if total_probes > 0 else 0
+        cutoff_rate = (self.tt_cutoffs / self.tt_hits * 100) if self.tt_hits > 0 else 0
+        
+        return {
+            'hits': self.tt_hits,
+            'misses': self.tt_misses,
+            'cutoffs': self.tt_cutoffs,
+            'total_probes': total_probes,
+            'hit_rate': hit_rate,
+            'cutoff_rate': cutoff_rate,
+            'table_size': len(self.transposition_table),
+            'table_size_limit': self.tt_size_limit
+        }
     
     def init_tablebase(self):
         """Initialize Syzygy tablebase if available"""
@@ -83,6 +267,14 @@ class MinimaxEngine(Engine):
         Returns:
             Best move found by the search
         """
+        # Increment search age for transposition table management
+        self.search_age += 1
+        
+        # Reset transposition table statistics for this search
+        self.tt_hits = 0
+        self.tt_misses = 0
+        self.tt_cutoffs = 0
+        
         # Set the starting position for consistent evaluation throughout search
         if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
             self.evaluation_manager.evaluator._set_starting_position(board)
@@ -159,8 +351,12 @@ class MinimaxEngine(Engine):
         search_time = time.time() - start_time
         nodes_per_second = self.nodes_searched / search_time if search_time > 0 else 0
         
+        # Get transposition table statistics
+        tt_stats = self.get_transposition_stats()
+        
         if not self.quiet:
             print(f"⏱️ Search completed in {search_time:.2f}s")
+            print(f"🔄 TT: {tt_stats['hits']}/{tt_stats['total_probes']} hits ({tt_stats['hit_rate']:.1f}%) | Cutoffs: {tt_stats['cutoffs']} ({tt_stats['cutoff_rate']:.1f}%)")
         
         # Print the best move found with component evaluation
         if best_move:
@@ -186,7 +382,7 @@ class MinimaxEngine(Engine):
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
         """
-        Minimax search with alpha-beta pruning.
+        Minimax search with alpha-beta pruning with transposition table support.
         
         Args:
             board: Current board state
@@ -204,6 +400,13 @@ class MinimaxEngine(Engine):
         # Initialize variation if None
         if variation is None:
             variation = []
+        
+        # Probe transposition table
+        tt_score, tt_best_move, tt_node_type = self._probe_transposition(board, depth, alpha, beta)
+        
+        # If we have a usable transposition table entry, return it
+        if tt_score is not None:
+            return tt_score, [tt_best_move] if tt_best_move else []
         
         # Leaf node: evaluate position
         if depth == 0:
@@ -234,13 +437,15 @@ class MinimaxEngine(Engine):
         if board.is_game_over():
             return self.evaluate(board), []
         
-        # Use optimized move generation and sorting
-        sorted_moves = self._get_sorted_moves_optimized(board)
+        # Use optimized move generation and sorting, with TT best move first if available
+        sorted_moves = self._get_sorted_moves_optimized(board, tt_best_move)
         
         # White's turn: maximize evaluation
         if board.turn:
             max_eval = -float('inf')
             best_line = []
+            best_move = None
+            original_alpha = alpha
             
             for move in sorted_moves:
                 # Get SAN notation before making the move
@@ -257,6 +462,7 @@ class MinimaxEngine(Engine):
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
+                    best_move = move
                     # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
@@ -268,6 +474,17 @@ class MinimaxEngine(Engine):
                 alpha = max(alpha, eval)
                 if beta <= alpha:
                     break  # Beta cutoff
+            
+            # Store result in transposition table
+            if best_move:
+                if max_eval <= original_alpha:
+                    node_type = UPPER_BOUND
+                elif max_eval >= beta:
+                    node_type = LOWER_BOUND
+                else:
+                    node_type = EXACT
+                
+                self._store_transposition(board, depth, max_eval, best_move, node_type)
                     
             return max_eval, best_line
             
@@ -275,6 +492,8 @@ class MinimaxEngine(Engine):
         else:
             min_eval = float('inf')
             best_line = []
+            best_move = None
+            original_beta = beta
             
             for move in sorted_moves:
                 # Get SAN notation before making the move
@@ -291,6 +510,7 @@ class MinimaxEngine(Engine):
                 if eval < min_eval:
                     min_eval = eval
                     best_line = [move] + line
+                    best_move = move
                     # Only print when we find a new best move that's at least 1 point better! 🎯
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
@@ -302,6 +522,17 @@ class MinimaxEngine(Engine):
                 beta = min(beta, eval)
                 if beta <= alpha:
                     break  # Alpha cutoff
+            
+            # Store result in transposition table
+            if best_move:
+                if min_eval <= alpha:
+                    node_type = UPPER_BOUND
+                elif min_eval >= original_beta:
+                    node_type = LOWER_BOUND
+                else:
+                    node_type = EXACT
+                
+                self._store_transposition(board, depth, min_eval, best_move, node_type)
                     
             return min_eval, best_line
 
@@ -392,7 +623,12 @@ class MinimaxEngine(Engine):
 
     def _quiescence(self, board, alpha, beta, depth=0):
         """
-        Quiescence search - continues searching only captures to avoid horizon effect.
+        Quiescence search - continues searching captures and checks to avoid horizon effect.
+        
+        Key improvements:
+        - If position is in check, search ALL legal moves (not just captures)
+        - If position is not in check, search captures and checks
+        - This ensures tactical sequences are properly evaluated
         
         Args:
             board: Current board state
@@ -435,41 +671,71 @@ class MinimaxEngine(Engine):
             except Exception:
                 # Fall back to standard evaluation if tablebase lookup fails
                 pass
+        
+        # Probe transposition table for quiescence search (use depth 0 to indicate quiescence)
+        tt_score, tt_best_move, tt_node_type = self._probe_transposition(board, 0, alpha, beta)
+        
+        # If we have a usable transposition table entry, return it
+        if tt_score is not None:
+            return tt_score, [tt_best_move] if tt_best_move else []
+        
+        # Check if position is in check
+        is_in_check = board.is_check()
+        
+        # Evaluate current position (stand pat) - only if not in check
+        if not is_in_check:
+            stand_pat = self.evaluate_cached(board)
             
-        # Evaluate current position (stand pat)
-        stand_pat = self.evaluate_cached(board)
+            # Alpha-beta pruning at quiescence level
+            if board.turn:  # White to move: maximize
+                if stand_pat >= beta:
+                    return beta, []
+                alpha = max(alpha, stand_pat)
+            else:  # Black to move: minimize
+                if stand_pat <= alpha:
+                    return alpha, []
+                beta = min(beta, stand_pat)
         
-        # Alpha-beta pruning at quiescence level
-        if board.turn:  # White to move: maximize
-            if stand_pat >= beta:
-                return beta, []
-            alpha = max(alpha, stand_pat)
-        else:  # Black to move: minimize
-            if stand_pat <= alpha:
-                return alpha, []
-            beta = min(beta, stand_pat)
+        # Determine which moves to search
+        if is_in_check:
+            # If in check, search ALL legal moves (the opponent must respond to the check)
+            moves_to_search = list(board.legal_moves)
+        else:
+            # If not in check, search captures and checks for tactical accuracy
+            captures = []
+            checks = []
+            
+            # Check if we should include checks in quiescence search
+            include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
+            
+            for move in board.legal_moves:
+                if board.is_capture(move):
+                    captures.append(move)
+                elif include_checks:
+                    # Check if move gives check
+                    board.push(move)
+                    if board.is_check():
+                        checks.append(move)
+                    board.pop()
+            
+            # Combine captures first, then checks
+            moves_to_search = captures + checks
         
-        # Search captures and checks for better tactical accuracy
-        captures = []
-        checks = []
-        
-        # Check if we should include checks in quiescence search
-        include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
-        
-        for move in board.legal_moves:
-            if board.is_capture(move):
-                captures.append(move)
-            elif include_checks:
-                # Check if move gives check
-                board.push(move)
-                if board.is_check():
-                    checks.append(move)
-                board.pop()
-        
-        # Combine captures first, then checks (no sorting)
-        moves_to_search = captures + checks
+        # If no moves to search, return stand pat evaluation
+        if not moves_to_search:
+            if is_in_check:
+                # If in check and no legal moves, it's checkmate
+                return -100000 if board.turn else 100000, []
+            else:
+                # If not in check and no captures/checks, return stand pat
+                stand_pat = self.evaluate_cached(board)
+                return stand_pat, []
         
         best_line = []
+        best_move = None
+        original_alpha = alpha
+        original_beta = beta
+        
         for move in moves_to_search:
             # Make the move
             board.push(move)
@@ -482,14 +748,36 @@ class MinimaxEngine(Engine):
                 if score > alpha:
                     alpha = score
                     best_line = [move] + line
+                    best_move = move
                 if alpha >= beta:
                     break  # Beta cutoff
             else:  # Black to move: minimize
                 if score < beta:
                     beta = score
                     best_line = [move] + line
+                    best_move = move
                 if beta <= alpha:
                     break  # Alpha cutoff
+        
+        # Store result in transposition table for quiescence search
+        final_score = alpha if board.turn else beta
+        if best_move:
+            if board.turn:  # White to move
+                if final_score <= original_alpha:
+                    node_type = UPPER_BOUND
+                elif final_score >= original_beta:
+                    node_type = LOWER_BOUND
+                else:
+                    node_type = EXACT
+            else:  # Black to move
+                if final_score <= original_alpha:
+                    node_type = UPPER_BOUND
+                elif final_score >= original_beta:
+                    node_type = LOWER_BOUND
+                else:
+                    node_type = EXACT
+            
+            self._store_transposition(board, 0, final_score, best_move, node_type)
         
         return (alpha, best_line) if board.turn else (beta, best_line)
     
@@ -529,24 +817,31 @@ class MinimaxEngine(Engine):
     
 
     
-    def _get_sorted_moves_optimized(self, board):
+    def _get_sorted_moves_optimized(self, board, tt_best_move=None):
         """
-        Optimized move generation and sorting.
+        Optimized move generation and sorting with transposition table support.
         
         Args:
             board: Current board state
+            tt_best_move: Best move from transposition table (if available)
             
         Returns:
-            List of moves sorted by priority (captures first, then checks, then others)
+            List of moves sorted by priority (TT move first, then captures, then checks, then others)
         """
         # Use generator to avoid creating full list initially
         legal_moves = board.legal_moves
         captures = []
         checks = []
         non_captures = []
+        tt_move_found = False
         
         # Single pass to categorize moves
         for move in legal_moves:
+            # Check if this is the TT best move
+            if tt_best_move and move == tt_best_move:
+                tt_move_found = True
+                continue  # We'll add it first later
+            
             if board.is_capture(move):
                 captures.append(move)
             else:
@@ -571,8 +866,15 @@ class MinimaxEngine(Engine):
         else:
             sorted_captures = []
         
-        # Combine captures first, then checks, then other moves
-        return sorted_captures + checks + non_captures
+        # Combine moves: TT move first (if found), then captures, then checks, then other moves
+        result = []
+        if tt_move_found and tt_best_move:
+            result.append(tt_best_move)
+        result.extend(sorted_captures)
+        result.extend(checks)
+        result.extend(non_captures)
+        
+        return result
 
     def test_capture_evaluation(self, board, move):
         """
