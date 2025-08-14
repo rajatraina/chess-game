@@ -155,7 +155,13 @@ class UCIEngine:
     def __init__(self):
         self.board = chess.Board()
         self.thinking_time = 1000  # milliseconds
-        self.depth_limit = 6
+        # Read depth from config file, default to 4 if not found
+        try:
+            from chess_game.engine import MinimaxEngine
+            temp_engine = MinimaxEngine()
+            self.depth_limit = temp_engine.depth
+        except:
+            self.depth_limit = 4  # Fallback default
         self.log_file = "LICHESS-LOG.txt"
         self.move_number = 0
         # Initialize logging engine with callback
@@ -226,6 +232,7 @@ class UCIEngine:
                 if option_name == "Depth":
                     try:
                         self.depth_limit = int(value)
+                        # Create engine with explicit depth override
                         self.engine = LoggingEngine(depth=self.depth_limit, log_callback=self.log)
                     except ValueError:
                         pass
@@ -282,8 +289,13 @@ class UCIEngine:
                 depth = int(parts[i + 1])
             i += 2
         
-        # Update engine with new depth
-        self.engine = LoggingEngine(depth=depth, log_callback=self.log)
+        # Update engine with new depth (use config file depth if not explicitly set)
+        if depth == self.depth_limit:
+            # Use config file depth
+            self.engine = LoggingEngine(log_callback=self.log)
+        else:
+            # Use explicit depth override
+            self.engine = LoggingEngine(depth=depth, log_callback=self.log)
         
         # Increment move number and log move start
         self.move_number += 1
