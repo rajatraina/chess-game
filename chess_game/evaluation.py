@@ -13,6 +13,11 @@ from typing import Dict, List, Tuple, Optional, Any
 import json
 import os
 
+try:
+    from .evaluation_cache import EvaluationCache, MaterialOnlyCache
+except ImportError:
+    from evaluation_cache import EvaluationCache, MaterialOnlyCache
+
 # Optional numpy import for neural network features
 try:
     import numpy as np
@@ -77,6 +82,15 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Store the starting position's piece count for consistent evaluation
         self.starting_piece_count = None
+        
+        # Initialize evaluation caches based on config
+        eval_cache_enabled = self.config.get("evaluation_cache_enabled", True)
+        eval_cache_size = self.config.get("evaluation_cache_size", 100000)
+        material_cache_enabled = self.config.get("material_cache_enabled", True)
+        material_cache_size = self.config.get("material_cache_size", 50000)
+        
+        self.evaluation_cache = EvaluationCache(max_size=eval_cache_size) if eval_cache_enabled else None
+        self.material_cache = MaterialOnlyCache(max_size=material_cache_size) if material_cache_enabled else None
     
     def _set_starting_position(self, board: chess.Board):
         """
@@ -176,6 +190,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Cache castling rights penalties
         self.cached_kingside_castling_right_penalty = self.config.get("kingside_castling_right_penalty", -15)
         self.cached_queenside_castling_right_penalty = self.config.get("queenside_castling_right_penalty", -12)
+        
+        # Cache mobility enabled settings
+        mobility_enabled = self.config.get("mobility_enabled", {})
+        self.mobility_enabled = {
+            "knight": mobility_enabled.get("knight", False),
+            "bishop": mobility_enabled.get("bishop", True),
+            "rook": mobility_enabled.get("rook", True)
+        }
         
         # Cache square mirror mapping for positional evaluation
         self.cached_square_mirror = {}
@@ -348,13 +370,25 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.halfmove_clock >= 100:  # Fifty-move rule
             return self.config["draw_value"]
         
+        # Try to get cached evaluation
+        if self.evaluation_cache is not None:
+            cached_eval = self.evaluation_cache.get(board)
+            if cached_eval is not None:
+                return cached_eval
+        
         # Check if this should use endgame evaluation based on starting position
         is_endgame = self._is_endgame_evaluation()
         
         if is_endgame:
-            return self._evaluate_endgame(board)
+            evaluation = self._evaluate_endgame(board)
         else:
-            return self._evaluate_middlegame(board)
+            evaluation = self._evaluate_middlegame(board)
+        
+        # Cache the evaluation
+        if self.evaluation_cache is not None:
+            self.evaluation_cache.put(board, evaluation)
+        
+        return evaluation
     
     def evaluate_with_components(self, board: chess.Board) -> dict:
         """
@@ -451,6 +485,12 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _evaluate_material(self, board: chess.Board) -> float:
         """Evaluate material balance using optimized bitboard operations with simplification logic"""
+        # Try to get cached material evaluation
+        if self.material_cache is not None:
+            cached_material = self.material_cache.get(board)
+            if cached_material is not None:
+                return cached_material
+        
         material_score = 0
         
         # Cache bishop counts for reuse
@@ -497,6 +537,10 @@ class HandcraftedEvaluator(BaseEvaluator):
             # Apply simplification to material score
             material_score *= simplification_factor
         
+        # Cache the material evaluation
+        if self.material_cache is not None:
+            self.material_cache.put(board, material_score)
+        
         return material_score
     
     def _evaluate_positional(self, board: chess.Board, is_endgame: bool = None) -> float:
@@ -540,10 +584,17 @@ class HandcraftedEvaluator(BaseEvaluator):
         white_pieces = board.occupied_co[chess.WHITE]
         black_pieces = board.occupied_co[chess.BLACK]
         
-        # Evaluate mobility for each piece type (excluding queen - use piece-square tables instead)
-        for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK]:
-            mobility_score += self._evaluate_piece_mobility(board, piece_type, chess.WHITE, white_pieces, black_pieces)
-            mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces, white_pieces)
+        # Evaluate mobility for each piece type based on configuration
+        piece_types = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
+        piece_names = {chess.KNIGHT: "knight", chess.BISHOP: "bishop", chess.ROOK: "rook"}
+        
+        for piece_type in piece_types:
+            piece_name = piece_names[piece_type]
+            
+            # Check if mobility evaluation is enabled for this piece type
+            if self.mobility_enabled.get(piece_name, True):  # Default to True if not configured
+                mobility_score += self._evaluate_piece_mobility(board, piece_type, chess.WHITE, white_pieces, black_pieces)
+                mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces, white_pieces)
         
         return mobility_score
     

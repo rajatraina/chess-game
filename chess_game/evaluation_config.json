@@ -8,6 +8,11 @@
         "bishop": 4,
         "rook": 2
     },
+    "mobility_enabled": {
+        "knight": false,
+        "bishop": true,
+        "rook": true
+    },
     "mobility_quality_weights": {
         "central_squares_multiplier": 1.0,
         "regular_squares_multiplier": 1.0
@@ -47,5 +52,9 @@
     "queenside_castling_right_penalty": -8,
     "pawn_shield_weight": 5,
     "king_safety_weight": 1.0,
+    "evaluation_cache_enabled": false,
+    "evaluation_cache_size": 100000,
+    "material_cache_enabled": false,
+    "material_cache_size": 50000,
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
 }
