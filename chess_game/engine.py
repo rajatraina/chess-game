@@ -7,9 +7,11 @@ import zlib
 try:
     from .evaluation import EvaluationManager, create_evaluator
     from .logging_manager import get_logger
+    from .search_visualizer import get_visualizer, configure_visualizer
 except ImportError:
     from evaluation import EvaluationManager, create_evaluator
     from logging_manager import get_logger
+    from search_visualizer import get_visualizer, configure_visualizer
 
 # Transposition table entry types
 EXACT = 0
@@ -107,6 +109,15 @@ class MinimaxEngine(Engine):
         # Load move ordering parameters
         self.moveorder_shallow_search_depth = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_depth", 2)
         self.moveorder_shallow_search_quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_quiescence_depth_limit", 2)
+        
+        # Initialize search visualizer
+        self.visualizer = get_visualizer()
+        viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
+        viz_target_fen = self.evaluation_manager.evaluator.config.get("search_visualization_target_fen", None)
+        configure_visualizer(viz_enabled, viz_target_fen)
+        
+        # Move counter for visualization
+        self.move_counter = 0
     
     def calculate_time_budget(self, time_remaining, increment):
         """
@@ -608,6 +619,9 @@ class MinimaxEngine(Engine):
         
         self.logger.log_search_start(board, search_depth)
         
+        # Start search visualization if enabled
+        self.visualizer.start_search(board, search_depth)
+        
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board):
             if not self.quiet:
@@ -628,7 +642,7 @@ class MinimaxEngine(Engine):
         self.nodes_searched = 0
         self.search_interrupted = False  # Track if search was interrupted by time budget
         
-        # Phase 1: Perform shallow search for move ordering
+        # Phase 1: Perform shallow search for move ordering (no visualization)
         sorted_moves = self._order_moves_with_shallow_search(board)
         
         # Phase 2: Clean transposition table after shallow search
@@ -636,6 +650,8 @@ class MinimaxEngine(Engine):
         
         # Evaluate moves in optimal order
         for move in sorted_moves:
+            # Record move being considered for visualization
+            self.visualizer.record_move_considered(move, board)
             # Check time budget
             if time_budget is not None:
                 elapsed_time = time.time() - start_time
@@ -691,6 +707,25 @@ class MinimaxEngine(Engine):
         
         self.logger.log_search_completion(search_time, self.nodes_searched, tt_stats)
         
+        # Finish search visualization if enabled
+        if best_move:
+            pv_san = []
+            pv_board = board.copy()
+            for m in best_line:
+                try:
+                    pv_san.append(pv_board.san(m))
+                    pv_board.push(m)
+                except Exception:
+                    break
+            self.visualizer.finish_search(board.san(best_move), best_value, self.nodes_searched, search_time, pv_san)
+            
+            # Export visualization to file
+            self.move_counter += 1
+            viz_file = self.visualizer.export_tree_to_file(self.move_counter)
+            if viz_file:
+                if not self.quiet:
+                    print(f"📄 Search tree exported to: {viz_file}")
+        
         # Print the best move found with component evaluation
         if best_move:
             pv_board = board.copy()
@@ -728,11 +763,15 @@ class MinimaxEngine(Engine):
         Returns:
             Tuple of (evaluation, principal_variation)
         """
+        # Enter node for visualization
+        self.visualizer.enter_node(board, None, depth, alpha, beta, False)
+        
         # Check time budget (only if we have a time budget and we're at the root level)
         if hasattr(self, 'search_start_time') and hasattr(self, 'time_budget') and self.time_budget is not None:
             elapsed_time = time.time() - self.search_start_time
             if elapsed_time >= self.time_budget:
                 # Return a neutral evaluation to stop the search
+                self.visualizer.exit_node(0, "TIMEOUT", [], 0, 0)
                 return 0, []
         
         # Count this node
@@ -772,7 +811,16 @@ class MinimaxEngine(Engine):
                     # Fall back to quiescence if tablebase lookup fails
                     pass
             
-            return self._quiescence(board, alpha, beta)
+            # Enter quiescence node for visualization
+            self.visualizer.enter_node(board, None, 0, alpha, beta, True)
+            
+            # Perform quiescence search
+            result = self._quiescence(board, alpha, beta)
+            
+            # Exit quiescence node for visualization
+            self.visualizer.exit_node(result[0], "QUIESCENCE", result[1] if result[1] else [], 0, 0)
+            
+            return result
         
         # Base case: game over
         if board.is_game_over():
@@ -789,6 +837,8 @@ class MinimaxEngine(Engine):
                 else:  # Black wins
                     eval_score = -(checkmate_bonus - distance_to_mate)
             
+            # Exit node for visualization
+            self.visualizer.exit_node(eval_score, "TERMINAL", [], 0, 0)
             return eval_score, []
         
         # Use optimized move generation and sorting, with TT best move first if available
@@ -802,6 +852,9 @@ class MinimaxEngine(Engine):
             original_alpha = alpha
             
             for move in sorted_moves:
+                # Record move being considered for visualization
+                self.visualizer.record_move_considered(move, board)
+                
                 # Get SAN notation before making the move
                 move_san = board.san(move)
                 
@@ -816,13 +869,14 @@ class MinimaxEngine(Engine):
                 if abs(eval) >= 50000:  # Likely a checkmate score
                     checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
                     if eval > 0:  # White is winning
-                        # Calculate distance: if eval is checkmate_bonus - distance, then distance = checkmate_bonus - eval
-                        distance_to_mate = max(0, checkmate_bonus - eval)
+                        # Calculate distance to mate from the principal variation length
+                        # The line contains the moves to mate, so distance = len(line)
+                        distance_to_mate = len(line)
                         # Apply correction: prefer shorter mates
                         eval = checkmate_bonus - distance_to_mate
                     else:  # Black is winning
-                        # Calculate distance: if eval is -(checkmate_bonus - distance), then distance = checkmate_bonus + eval
-                        distance_to_mate = max(0, checkmate_bonus + eval)
+                        # Calculate distance to mate from the principal variation length
+                        distance_to_mate = len(line)
                         # Apply correction: prefer shorter mates
                         eval = -(checkmate_bonus - distance_to_mate)
                 
@@ -854,6 +908,17 @@ class MinimaxEngine(Engine):
                 
                 self._store_transposition(board, depth, max_eval, best_move, node_type)
                     
+            # Exit node for visualization
+            best_line_san = []
+            if best_line:
+                temp_board = board.copy()
+                for move in best_line:
+                    try:
+                        best_line_san.append(temp_board.san(move))
+                        temp_board.push(move)
+                    except Exception:
+                        best_line_san.append(move.uci())
+            self.visualizer.exit_node(max_eval, "EXACT", best_line_san, 0, 0)
             return max_eval, best_line
             
         # Black's turn: minimize evaluation
@@ -864,6 +929,9 @@ class MinimaxEngine(Engine):
             original_beta = beta
             
             for move in sorted_moves:
+                # Record move being considered for visualization
+                self.visualizer.record_move_considered(move, board)
+                
                 # Get SAN notation before making the move
                 move_san = board.san(move)
                 
@@ -878,13 +946,14 @@ class MinimaxEngine(Engine):
                 if abs(eval) >= 50000:  # Likely a checkmate score
                     checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
                     if eval > 0:  # White is winning
-                        # Calculate distance: if eval is checkmate_bonus - distance, then distance = checkmate_bonus - eval
-                        distance_to_mate = max(0, checkmate_bonus - eval)
+                        # Calculate distance to mate from the principal variation length
+                        # The line contains the moves to mate, so distance = len(line)
+                        distance_to_mate = len(line)
                         # Apply correction: prefer shorter mates
                         eval = checkmate_bonus - distance_to_mate
                     else:  # Black is winning
-                        # Calculate distance: if eval is -(checkmate_bonus - distance), then distance = checkmate_bonus + eval
-                        distance_to_mate = max(0, checkmate_bonus + eval)
+                        # Calculate distance to mate from the principal variation length
+                        distance_to_mate = len(line)
                         # Apply correction: prefer shorter mates
                         eval = -(checkmate_bonus - distance_to_mate)
                 
@@ -916,6 +985,17 @@ class MinimaxEngine(Engine):
                 
                 self._store_transposition(board, depth, min_eval, best_move, node_type)
                     
+            # Exit node for visualization
+            best_line_san = []
+            if best_line:
+                temp_board = board.copy()
+                for move in best_line:
+                    try:
+                        best_line_san.append(temp_board.san(move))
+                        temp_board.push(move)
+                    except Exception:
+                        best_line_san.append(move.uci())
+            self.visualizer.exit_node(min_eval, "EXACT", best_line_san, 0, 0)
             return min_eval, best_line
 
     def evaluate(self, board):
@@ -1100,6 +1180,9 @@ class MinimaxEngine(Engine):
         original_beta = beta
         
         for move in moves_to_search:
+            # Record move being considered for visualization
+            self.visualizer.record_move_considered(move, board)
+            
             # Make the move
             board.push(move)
             # Recursively search the resulting position

@@ -134,7 +134,12 @@ class HandcraftedEvaluator(BaseEvaluator):
             "checkmate_bonus": 100000,
             "draw_value": 0,
             "quiescence_depth_limit": 10,
-            "cache_size_limit": 10000
+            "cache_size_limit": 10000,
+            "mobility_enabled": {
+                "knight": False,
+                "bishop": False,
+                "rook": False
+            }
         }
         
         if config_file and os.path.exists(config_file):
@@ -195,8 +200,8 @@ class HandcraftedEvaluator(BaseEvaluator):
         mobility_enabled = self.config.get("mobility_enabled", {})
         self.mobility_enabled = {
             "knight": mobility_enabled.get("knight", False),
-            "bishop": mobility_enabled.get("bishop", True),
-            "rook": mobility_enabled.get("rook", True)
+            "bishop": mobility_enabled.get("bishop", False),
+            "rook": mobility_enabled.get("rook", False)
         }
         
         # Cache square mirror mapping for positional evaluation

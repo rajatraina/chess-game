@@ -22,8 +22,8 @@
         "positional_weight": 1.5,
         "mobility_weight": 0.1
     },
-    "search_depth": 4,
-    "endgame_search_depth": 4,
+    "search_depth": 3,
+    "endgame_search_depth": 3,
     "piece_values": {
         "pawn": 100,
         "knight": 320,
@@ -34,11 +34,11 @@
     "total_piece_values": 8180,
     "simplification_material_diff_threshold": 600,
     "simplification_material_diff_multiplier": 0.0001,
-    "time_management_moves_remaining": 25,
+    "time_management_moves_remaining": 8,
     "time_management_increment_used": 0.8,
     "checkmate_bonus": 100000,
     "draw_value": 0,
-    "quiescence_depth_limit": 10,
+    "quiescence_depth_limit": 8,
     "quiescence_include_checks": true,
     "quiescence_include_queen_defense": false,
     "quiescence_include_value_threshold": false,
@@ -56,5 +56,7 @@
     "evaluation_cache_size": 100000,
     "material_cache_enabled": false,
     "material_cache_size": 50000,
+    "search_visualization_enabled": false,
+    "search_visualization_target_fen": null,
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
 }
