@@ -8,6 +8,7 @@ import sys
 import select
 from chess_game.board import ChessBoard
 from chess_game.engine import MinimaxEngine
+from chess_game.logging_manager import ChessLoggingManager
 import time
 
 ASSET_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'pieces')
@@ -25,7 +26,12 @@ class PygameChessGUI:
         self.images = {}
         self.selected_square = None
         self.game_mode = "human_vs_computer"
+        
+        # Create logging manager for GUI
+        logger = ChessLoggingManager(print, quiet=False)
         self.engine = MinimaxEngine(evaluator_type="handcrafted")  # Use config file depth
+        # Override the engine's logger to use our GUI logger
+        self.engine.logger = logger
         
         # Computer vs Computer mode tracking
         self.computer_vs_computer_mode = False

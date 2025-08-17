@@ -7,84 +7,17 @@ import chess
 import time
 from datetime import datetime
 from chess_game.engine import MinimaxEngine
+from chess_game.logging_manager import ChessLoggingManager
 
 class LoggingEngine(MinimaxEngine):
-    """Engine with logging capabilities"""
+    """Engine with logging capabilities using unified logging manager"""
     
     def __init__(self, depth=None, log_callback=None):
+        # Create a logging manager for this engine
+        logger = ChessLoggingManager(log_callback, quiet=False)
         super().__init__(depth=depth, new_best_move_callback=log_callback)
-        self.log_callback = log_callback or print
-        # Suppress stdout logging when running as UCI engine
-        self.quiet = True
-    
-    def get_move(self, board, time_budget=None):
-        """Get best move with logging"""
-        if self.log_callback:
-            self.log_callback("🤔 Engine thinking...")
-        
-        # Reset search stats
-        self.nodes_searched = 0
-        self.search_start_time = time.time()
-        
-        # Get best move
-        best_move = super().get_move(board, time_budget)
-        
-        # Log search results
-        if self.log_callback:
-            elapsed = time.time() - self.search_start_time
-            speed = self.nodes_searched / elapsed if elapsed > 0 else 0
-            
-            # Get TT stats
-            tt_hits = getattr(self, 'tt_hits', 0)
-            tt_misses = getattr(self, 'tt_misses', 0)
-            tt_cutoffs = getattr(self, 'tt_cutoffs', 0)
-            total_tt = tt_hits + tt_misses
-            tt_hit_rate = (tt_hits / total_tt * 100) if total_tt > 0 else 0
-            
-            # Log search completion
-            self.log_callback(f"⏱️ Search completed in {elapsed:.2f}s")
-            self.log_callback(f"🔄 TT: {tt_hits}/{total_tt} hits ({tt_hit_rate:.1f}%) | Cutoffs: {tt_cutoffs} ({tt_cutoffs/tt_hits*100:.1f}%)" if tt_hits > 0 else "🔄 TT: No hits")
-            
-            # Log best move and principal variation
-            if best_move:
-                try:
-                    move_san = board.san(best_move)
-                    self.log_callback(f"🏆 Best: {move_san}")
-                    
-                    # Log principal variation if available
-                    if hasattr(self, 'best_line_found') and self.best_line_found:
-                        try:
-                            pv_moves = []
-                            pv_board = board.copy()
-                            for m in self.best_line_found[:5]:  # Show first 5 moves
-                                if m in pv_board.legal_moves:
-                                    pv_moves.append(pv_board.san(m))
-                                    pv_board.push(m)
-                                else:
-                                    break
-                            pv_string = ' '.join(pv_moves) if pv_moves else "N/A"
-                            self.log_callback(f"📊 PV: {pv_string}")
-                        except Exception as e:
-                            self.log_callback(f"📊 PV: Error generating PV: {e}")
-                    
-                    self.log_callback(f"🚀 Speed: {speed:.0f} nodes/s")
-                    
-                    # Log evaluation components if available
-                    try:
-                        eval_components = self.evaluate_with_components(board)
-                        if eval_components:
-                            material = eval_components.get('material', 0)
-                            positional = eval_components.get('positional', 0)
-                            mobility = eval_components.get('mobility', 0)
-                            overall_eval = material + positional + mobility
-                            self.log_callback(f"📊 Overall: {overall_eval:.1f} (Material: {material:.1f}, Position: {positional:.1f}, Mobility: {mobility:.1f})")
-                    except Exception:
-                        pass
-                        
-                except Exception as e:
-                    self.log_callback(f"🏆 Best: {best_move.uci()} (SAN error: {e})")
-        
-        return best_move
+        # Override the logger to use our custom one
+        self.logger = logger
 
 class UCIEngine:
     """UCI-compatible wrapper for the chess engine"""
@@ -261,7 +194,7 @@ class UCIEngine:
             time_budget = self.engine.calculate_time_budget(btime, binc or 0)
         
         if time_budget is not None:
-            self.log(f"Time budget: {time_budget:.2f}s")
+            self.engine.logger.log_time_budget(time_budget)
         
         # Find best move
         start_time = time.time()
@@ -275,20 +208,18 @@ class UCIEngine:
         if best_move and best_move in self.board.legal_moves:
             try:
                 move_san = self.board.san(best_move)
-                move_status = "completed" if search_completed else "timeout"
-                self.log(f"🎯 Move sent: {move_san} ({move_status})")
+                self.engine.logger.log_move_sent(move_san, search_completed)
                 print(f"info string Playing move: {move_san}")
             except Exception as e:
-                move_status = "completed" if search_completed else "timeout"
-                self.log(f"🎯 Move sent: {best_move.uci()} ({move_status}, SAN error: {e})")
+                self.engine.logger.log_move_sent(best_move.uci(), search_completed)
                 print(f"info string Playing move: {best_move.uci()} (SAN error: {e})")
             print(f"bestmove {best_move.uci()}")
         else:
             if best_move:
-                self.log(f"❌ ERROR: Illegal move {best_move.uci()} generated, resigning")
+                self.engine.logger.log_error(f"Illegal move {best_move.uci()} generated, resigning")
                 print(f"info string ERROR: Illegal move {best_move.uci()} generated, resigning")
             else:
-                self.log(f"❌ ERROR: No move generated, resigning")
+                self.engine.logger.log_error("No move generated, resigning")
             print("bestmove 0000")  # Resign
 
 def main():

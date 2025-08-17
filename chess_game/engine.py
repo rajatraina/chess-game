@@ -6,8 +6,10 @@ import os
 import zlib
 try:
     from .evaluation import EvaluationManager, create_evaluator
+    from .logging_manager import get_logger
 except ImportError:
     from evaluation import EvaluationManager, create_evaluator
+    from logging_manager import get_logger
 
 # Transposition table entry types
 EXACT = 0
@@ -60,6 +62,9 @@ class MinimaxEngine(Engine):
         self.quiet = quiet  # Control debug output
         self.new_best_move_callback = new_best_move_callback
         
+        # Initialize logging manager
+        self.logger = get_logger(new_best_move_callback, quiet)
+        
         # Initialize evaluation system with config file by default
         if evaluator_config is None:
             evaluator_config = {"config_file": "chess_game/evaluation_config.json"}
@@ -98,6 +103,10 @@ class MinimaxEngine(Engine):
         # Load time management parameters
         self.time_management_moves_remaining = self.evaluation_manager.evaluator.config.get("time_management_moves_remaining", 30)
         self.time_management_increment_used = self.evaluation_manager.evaluator.config.get("time_management_increment_used", 0.8)
+        
+        # Load move ordering parameters
+        self.moveorder_shallow_search_depth = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_depth", 2)
+        self.moveorder_shallow_search_quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_quiescence_depth_limit", 2)
     
     def calculate_time_budget(self, time_remaining, increment):
         """
@@ -119,6 +128,276 @@ class MinimaxEngine(Engine):
         
         # Ensure minimum time budget of 0.1 seconds
         return max(time_budget, 0.1)
+    
+    def _shallow_search_with_quiescence(self, board, depth, alpha, beta):
+        """
+        Perform a shallow search with limited quiescence for move ordering.
+        
+        Args:
+            board: Current board state
+            depth: Search depth
+            alpha: Alpha value for pruning
+            beta: Beta value for pruning
+            
+        Returns:
+            Tuple of (evaluation, principal_variation)
+        """
+        # Count this node
+        self.nodes_searched += 1
+        
+        # Check for game over conditions
+        if board.is_game_over():
+            if board.is_checkmate():
+                # Checkmate evaluation
+                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                if board.turn:  # Black wins (White to move but checkmated)
+                    return -checkmate_bonus, []
+                else:  # White wins (Black to move but checkmated)
+                    return checkmate_bonus, []
+            elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves() or board.is_repetition():
+                return 0, []  # Draw
+        
+        # Leaf node: use quiescence search
+        if depth == 0:
+            return self._quiescence_shallow(board, alpha, beta, 0)
+        
+        # Probe transposition table
+        tt_score, tt_best_move, tt_node_type = self._probe_transposition(board, depth, alpha, beta)
+        
+        # If we have a usable transposition table entry, return it
+        if tt_score is not None:
+            return tt_score, [tt_best_move] if tt_best_move else []
+        
+        # Check if position is in tablebase for perfect evaluation
+        if self.tablebase and self.is_tablebase_position(board):
+            try:
+                wdl = self.tablebase.get_wdl(board)
+                if wdl is not None:
+                    # Convert WDL to evaluation score
+                    if wdl == 2:  # Win
+                        return 100000, []
+                    elif wdl == 1:  # Cursed win
+                        return 50000, []
+                    elif wdl == 0:  # Draw
+                        return 0, []
+                    elif wdl == -1:  # Blessed loss
+                        return -50000, []
+                    elif wdl == -2:  # Loss
+                        return -100000, []
+            except Exception:
+                pass
+        
+        # Get sorted moves for this shallow search
+        sorted_moves = self._get_sorted_moves_optimized(board, tt_best_move)
+        
+        best_value = -float('inf') if board.turn else float('inf')
+        best_line = []
+        
+        for move in sorted_moves:
+            # Make the move
+            board.push(move)
+            
+            # Search the resulting position
+            value, line = self._shallow_search_with_quiescence(board, depth - 1, alpha, beta)
+            
+            # Undo the move
+            board.pop()
+            
+            # Update best move based on whose turn it is
+            if board.turn:  # White to move: maximize
+                if value > best_value:
+                    best_value = value
+                    best_line = [move] + line
+                alpha = max(alpha, value)
+                if alpha >= beta:
+                    break  # Beta cutoff
+            else:  # Black to move: minimize
+                if value < best_value:
+                    best_value = value
+                    best_line = [move] + line
+                beta = min(beta, value)
+                if alpha >= beta:
+                    break  # Alpha cutoff
+        
+        # Store in transposition table
+        node_type = EXACT
+        if best_value <= alpha:
+            node_type = UPPER_BOUND
+        elif best_value >= beta:
+            node_type = LOWER_BOUND
+        
+        self._store_transposition(board, depth, best_value, best_line[0] if best_line else None, node_type)
+        
+        return best_value, best_line
+    
+    def _quiescence_shallow(self, board, alpha, beta, depth=0):
+        """
+        Limited quiescence search for shallow move ordering.
+        
+        Args:
+            board: Current board state
+            alpha: Alpha value for pruning
+            beta: Beta value for pruning
+            depth: Current quiescence depth
+            
+        Returns:
+            Tuple of (evaluation, principal_variation)
+        """
+        # Count this node
+        self.nodes_searched += 1
+        
+        # Check for game over conditions
+        if board.is_game_over():
+            return self.evaluate(board), []
+        
+        # Limit quiescence depth
+        if depth > self.moveorder_shallow_search_quiescence_depth_limit:
+            return self.evaluate(board), []
+        
+        # Check if position is in check
+        is_in_check = board.is_check()
+        
+        # Evaluate current position (stand pat) - only if not in check
+        if not is_in_check:
+            stand_pat = self.evaluate_cached(board)
+            
+            # Alpha-beta pruning at quiescence level
+            if board.turn:  # White to move: maximize
+                if stand_pat >= beta:
+                    return beta, []
+                alpha = max(alpha, stand_pat)
+            else:  # Black to move: minimize
+                if stand_pat <= alpha:
+                    return alpha, []
+                beta = min(beta, stand_pat)
+        
+        # Determine which moves to search
+        if is_in_check:
+            # If in check, search ALL legal moves
+            moves_to_search = list(board.legal_moves)
+        else:
+            # If not in check, search captures and checks
+            moves_to_search = self._get_quiescence_moves(board)
+        
+        if not moves_to_search:
+            if is_in_check:
+                # If in check and no legal moves, it's checkmate
+                return -100000 if board.turn else 100000, []
+            else:
+                # If not in check and no captures/checks, return stand pat
+                stand_pat = self.evaluate_cached(board)
+                return stand_pat, []
+        
+        best_line = []
+        best_move = None
+        
+        for move in moves_to_search:
+            # Make the move
+            board.push(move)
+            
+            # Recursive quiescence search
+            value, line = self._quiescence_shallow(board, alpha, beta, depth + 1)
+            
+            # Undo the move
+            board.pop()
+            
+            # Update best move
+            if board.turn:  # White to move: maximize
+                if value > alpha:
+                    alpha = value
+                    best_line = [move] + line
+                    best_move = move
+            else:  # Black to move: minimize
+                if value < beta:
+                    beta = value
+                    best_line = [move] + line
+                    best_move = move
+            
+            # Alpha-beta cutoff
+            if alpha >= beta:
+                break
+        
+        return (alpha if board.turn else beta), best_line
+    
+    def _order_moves_with_shallow_search(self, board):
+        """
+        Order moves using shallow search with limited quiescence.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            List of moves ordered by shallow search evaluation
+        """
+        if not self.quiet:
+            print(f"🔍 Performing shallow search (depth {self.moveorder_shallow_search_depth}) for move ordering...")
+        
+        # Store original node count
+        original_nodes = self.nodes_searched
+        
+        # Perform shallow search on all legal moves
+        move_evaluations = []
+        legal_moves = list(board.legal_moves)
+        
+        for move in legal_moves:
+            # Make the move
+            board.push(move)
+            
+            # Perform shallow search
+            eval_score, _ = self._shallow_search_with_quiescence(
+                board, 
+                self.moveorder_shallow_search_depth - 1, 
+                -float('inf'), 
+                float('inf')
+            )
+            
+            # Undo the move
+            board.pop()
+            
+            move_evaluations.append((move, eval_score))
+        
+        # Sort moves by evaluation (best first for the side to move)
+        if board.turn:  # White to move: sort by descending evaluation
+            move_evaluations.sort(key=lambda x: x[1], reverse=True)
+        else:  # Black to move: sort by ascending evaluation
+            move_evaluations.sort(key=lambda x: x[1], reverse=False)
+        
+        # Extract ordered moves
+        ordered_moves = [move for move, eval_score in move_evaluations]
+        
+        # Log shallow search statistics and move order
+        shallow_nodes = self.nodes_searched - original_nodes
+        self.logger.log_shallow_search_stats(shallow_nodes, len(legal_moves))
+        self.logger.log_move_order(board, ordered_moves)
+        
+        return ordered_moves
+    
+    def _clean_transposition_table_after_shallow_search(self):
+        """
+        Clean the transposition table after shallow search to remove low-depth entries.
+        This prevents TT pollution from shallow search entries.
+        """
+        if not self.tt_enabled:
+            return
+        
+        # Determine cutoff depth (remove entries from shallow search)
+        cutoff_depth = self.depth - 1
+        
+        # Count entries before cleaning
+        entries_before = len(self.transposition_table)
+        
+        # Remove shallow entries
+        keys_to_remove = []
+        for key, entry in self.transposition_table.items():
+            if entry.depth < cutoff_depth:
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del self.transposition_table[key]
+        
+        # Log cleaning statistics
+        entries_after = len(self.transposition_table)
+        self.logger.log_tt_cleaning(entries_before, entries_after)
     
     def _init_zobrist_hash(self):
         """Initialize Zobrist hash tables for efficient position hashing"""
@@ -323,9 +602,11 @@ class MinimaxEngine(Engine):
         alpha = -float('inf')
         beta = float('inf')
         
-        if not self.quiet:
-            print(f"\n🤔 Engine thinking (depth {search_depth})...")
-            print(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
+        # Store best line and value as instance variables for logging
+        self.best_line = []
+        self.best_value = 0
+        
+        self.logger.log_search_start(board, search_depth)
         
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board):
@@ -347,8 +628,11 @@ class MinimaxEngine(Engine):
         self.nodes_searched = 0
         self.search_interrupted = False  # Track if search was interrupted by time budget
         
-        # Get sorted moves for optimal move ordering
-        sorted_moves = self._get_sorted_moves_optimized(board, None)  # No TT best move at root level
+        # Phase 1: Perform shallow search for move ordering
+        sorted_moves = self._order_moves_with_shallow_search(board)
+        
+        # Phase 2: Clean transposition table after shallow search
+        self._clean_transposition_table_after_shallow_search()
         
         # Evaluate moves in optimal order
         for move in sorted_moves:
@@ -380,22 +664,22 @@ class MinimaxEngine(Engine):
                     best_value = value
                     best_move = move
                     best_line = [move] + line
+                    # Update instance variables for logging
+                    self.best_line = best_line
+                    self.best_value = best_value
                     # Log new best move found during search
-                    if not self.quiet:
-                        print(f"🔄 New best move: {move_san} ({value:.1f})")
-                    if self.new_best_move_callback:
-                        self.new_best_move_callback(f"🔄 New best move: {move_san} ({value:.1f})")
+                    self.logger.log_new_best_move(move_san, value)
                 alpha = max(alpha, value)
             else:  # Black to move: pick lowest evaluation
                 if value < best_value:
                     best_value = value
                     best_move = move
                     best_line = [move] + line
+                    # Update instance variables for logging
+                    self.best_line = best_line
+                    self.best_value = best_value
                     # Log new best move found during search
-                    if not self.quiet:
-                        print(f"🔄 New best move: {move_san} ({value:.1f})")
-                    if self.new_best_move_callback:
-                        self.new_best_move_callback(f"🔄 New best move: {move_san} ({value:.1f})")
+                    self.logger.log_new_best_move(move_san, value)
                 beta = min(beta, value)
         
         # Calculate search time and nodes per second
@@ -405,9 +689,7 @@ class MinimaxEngine(Engine):
         # Get transposition table statistics
         tt_stats = self.get_transposition_stats()
         
-        if not self.quiet:
-            print(f"⏱️ Search completed in {search_time:.2f}s")
-            print(f"🔄 TT: {tt_stats['hits']}/{tt_stats['total_probes']} hits ({tt_stats['hit_rate']:.1f}%) | Cutoffs: {tt_stats['cutoffs']} ({tt_stats['cutoff_rate']:.1f}%)")
+        self.logger.log_search_completion(search_time, self.nodes_searched, tt_stats)
         
         # Print the best move found with component evaluation
         if best_move:
@@ -429,9 +711,7 @@ class MinimaxEngine(Engine):
             # Calculate overall evaluation
             overall_eval = final_components['material'] + final_components['position'] + final_components['mobility']
             
-            if not self.quiet:
-                print(f"🏆 Best: {pv_san[0]} ({best_value:.1f}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
-                print(f"📊 Overall: {overall_eval:.1f} (Material: {final_components['material']:.1f}, Position: {final_components['position']:.1f}, Mobility: {final_components['mobility']:.1f})")
+            self.logger.log_best_move(board, best_move, best_value, best_line, final_components)
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):

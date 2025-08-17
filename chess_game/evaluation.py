@@ -173,6 +173,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.cached_kingside_castling_bonus = self.config.get("kingside_castling_bonus", 30)
         self.cached_queenside_castling_bonus = self.config.get("queenside_castling_bonus", 25)
         
+        # Cache castling rights penalties
+        self.cached_kingside_castling_right_penalty = self.config.get("kingside_castling_right_penalty", -15)
+        self.cached_queenside_castling_right_penalty = self.config.get("queenside_castling_right_penalty", -12)
+        
         # Cache square mirror mapping for positional evaluation
         self.cached_square_mirror = {}
         for square in range(64):
@@ -578,15 +582,15 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _evaluate_castling_bonus(self, board: chess.Board) -> float:
         """
-        Evaluate castling bonus for both sides.
+        Evaluate castling bonus and castling rights penalties for both sides.
         
         Args:
             board: Current board state
             
         Returns:
-            Castling bonus score from White's perspective
+            Castling score from White's perspective (bonus for castling, penalty for lost rights)
         """
-        castling_bonus = 0
+        castling_score = 0
         
         # Cache king squares to avoid multiple lookups
         white_king_square = board.king(chess.WHITE)
@@ -596,21 +600,68 @@ class HandcraftedEvaluator(BaseEvaluator):
         if white_king_square is not None:
             # Kingside castling (g1)
             if white_king_square == chess.G1:
-                castling_bonus += self.cached_kingside_castling_bonus
+                castling_score += self.cached_kingside_castling_bonus
             # Queenside castling (c1)
             elif white_king_square == chess.C1:
-                castling_bonus += self.cached_queenside_castling_bonus
+                castling_score += self.cached_queenside_castling_bonus
         
         # Check if Black has castled
         if black_king_square is not None:
             # Kingside castling (g8)
             if black_king_square == chess.G8:
-                castling_bonus -= self.cached_kingside_castling_bonus
+                castling_score -= self.cached_kingside_castling_bonus
             # Queenside castling (c8)
             elif black_king_square == chess.C8:
-                castling_bonus -= self.cached_queenside_castling_bonus
+                castling_score -= self.cached_queenside_castling_bonus
         
-        return castling_bonus
+        # Evaluate castling rights penalties
+        castling_score += self._evaluate_castling_rights_penalties(board)
+        
+        return castling_score
+    
+    def _evaluate_castling_rights_penalties(self, board: chess.Board) -> float:
+        """
+        Evaluate penalties for lost castling rights.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Castling rights penalty score from White's perspective
+        """
+        castling_rights_penalty = 0
+        
+        # Check White's castling rights
+        if board.has_kingside_castling_rights(chess.WHITE):
+            # White still has kingside castling rights
+            pass
+        else:
+            # White lost kingside castling rights - apply penalty
+            castling_rights_penalty += self.cached_kingside_castling_right_penalty
+            
+        if board.has_queenside_castling_rights(chess.WHITE):
+            # White still has queenside castling rights
+            pass
+        else:
+            # White lost queenside castling rights - apply penalty
+            castling_rights_penalty += self.cached_queenside_castling_right_penalty
+        
+        # Check Black's castling rights
+        if board.has_kingside_castling_rights(chess.BLACK):
+            # Black still has kingside castling rights
+            pass
+        else:
+            # Black lost kingside castling rights - apply penalty (negative for Black)
+            castling_rights_penalty -= self.cached_kingside_castling_right_penalty
+            
+        if board.has_queenside_castling_rights(chess.BLACK):
+            # Black still has queenside castling rights
+            pass
+        else:
+            # Black lost queenside castling rights - apply penalty (negative for Black)
+            castling_rights_penalty -= self.cached_queenside_castling_right_penalty
+        
+        return castling_rights_penalty
     
     def _evaluate_pawn_shield(self, board: chess.Board) -> float:
         """
