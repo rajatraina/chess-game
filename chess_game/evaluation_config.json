@@ -24,16 +24,24 @@
         "knight": 320,
         "bishop": 330,
         "rook": 500,
-        "queen": 990,
-        "king": 20000
+        "queen": 990
     },
+    "total_piece_values": 8180,
+    "simplification_material_diff_threshold": 600,
+    "simplification_material_diff_multiplier": 0.0001,
+    "time_management_moves_remaining": 30,
+    "time_management_increment_used": 0.8,
     "checkmate_bonus": 100000,
     "draw_value": 0,
     "quiescence_depth_limit": 10,
+    "quiescence_include_checks": true,
+    "quiescence_include_queen_defense": false,
+    "quiescence_include_value_threshold": false,
+    "quiescence_value_threshold": 500,
     "cache_size_limit": 100000,
     "kingside_castling_bonus": 30,
     "queenside_castling_bonus": 25,
     "pawn_shield_weight": 5,
     "king_safety_weight": 1.0,
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
-} 
+}

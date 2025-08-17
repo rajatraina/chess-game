@@ -54,10 +54,11 @@ class MinimaxEngine(Engine):
     - Black's turn: minimize evaluation (find best move for Black)
     """
     
-    def __init__(self, depth=None, evaluator_type="handcrafted", evaluator_config=None, quiet=False):
+    def __init__(self, depth=None, evaluator_type="handcrafted", evaluator_config=None, quiet=False, new_best_move_callback=None):
         self.nodes_searched = 0
         self.search_start_time = 0
         self.quiet = quiet  # Control debug output
+        self.new_best_move_callback = new_best_move_callback
         
         # Initialize evaluation system with config file by default
         if evaluator_config is None:
@@ -93,6 +94,31 @@ class MinimaxEngine(Engine):
         
         # Initialize Zobrist hash for transposition table
         self._init_zobrist_hash()
+        
+        # Load time management parameters
+        self.time_management_moves_remaining = self.evaluation_manager.evaluator.config.get("time_management_moves_remaining", 30)
+        self.time_management_increment_used = self.evaluation_manager.evaluator.config.get("time_management_increment_used", 0.8)
+    
+    def calculate_time_budget(self, time_remaining, increment):
+        """
+        Calculate time budget for the current move.
+        
+        Args:
+            time_remaining: Time remaining in milliseconds
+            increment: Time increment in milliseconds
+            
+        Returns:
+            Time budget in seconds
+        """
+        # Convert to seconds
+        time_remaining_sec = time_remaining / 1000.0
+        increment_sec = increment / 1000.0
+        
+        # Calculate time budget using the formula
+        time_budget = (time_remaining_sec / self.time_management_moves_remaining) + (increment_sec * self.time_management_increment_used)
+        
+        # Ensure minimum time budget of 0.1 seconds
+        return max(time_budget, 0.1)
     
     def _init_zobrist_hash(self):
         """Initialize Zobrist hash tables for efficient position hashing"""
@@ -257,12 +283,13 @@ class MinimaxEngine(Engine):
                 print(f"⚠️  Could not initialize tablebase: {e}")
             self.tablebase = None
 
-    def get_move(self, board):
+    def get_move(self, board, time_budget=None):
         """
         Find the best move for the current side to move.
         
         Args:
             board: Current chess board state
+            time_budget: Maximum time to spend on this move in seconds (None for unlimited)
             
         Returns:
             Best move found by the search
@@ -316,10 +343,24 @@ class MinimaxEngine(Engine):
         # Start timing the search and reset node counter
         start_time = time.time()
         self.search_start_time = start_time
+        self.time_budget = time_budget  # Store time budget for minimax function
         self.nodes_searched = 0
+        self.search_interrupted = False  # Track if search was interrupted by time budget
         
-        # Evaluate all legal moves
-        for move in board.legal_moves:
+        # Get sorted moves for optimal move ordering
+        sorted_moves = self._get_sorted_moves_optimized(board, None)  # No TT best move at root level
+        
+        # Evaluate moves in optimal order
+        for move in sorted_moves:
+            # Check time budget
+            if time_budget is not None:
+                elapsed_time = time.time() - start_time
+                if elapsed_time >= time_budget:
+                    if not self.quiet:
+                        print(f"⏰ Time budget reached ({elapsed_time:.2f}s >= {time_budget:.2f}s), returning current best move")
+                    self.search_interrupted = True
+                    break
+            
             # Get the SAN notation before making the move
             move_san = board.san(move)
             
@@ -339,12 +380,22 @@ class MinimaxEngine(Engine):
                     best_value = value
                     best_move = move
                     best_line = [move] + line
+                    # Log new best move found during search
+                    if not self.quiet:
+                        print(f"🔄 New best move: {move_san} ({value:.1f})")
+                    if self.new_best_move_callback:
+                        self.new_best_move_callback(f"🔄 New best move: {move_san} ({value:.1f})")
                 alpha = max(alpha, value)
             else:  # Black to move: pick lowest evaluation
                 if value < best_value:
                     best_value = value
                     best_move = move
                     best_line = [move] + line
+                    # Log new best move found during search
+                    if not self.quiet:
+                        print(f"🔄 New best move: {move_san} ({value:.1f})")
+                    if self.new_best_move_callback:
+                        self.new_best_move_callback(f"🔄 New best move: {move_san} ({value:.1f})")
                 beta = min(beta, value)
         
         # Calculate search time and nodes per second
@@ -375,9 +426,12 @@ class MinimaxEngine(Engine):
                 pv_board.push(move)
             final_components = self.evaluate_with_components(pv_board)
             
+            # Calculate overall evaluation
+            overall_eval = final_components['material'] + final_components['position'] + final_components['mobility']
+            
             if not self.quiet:
                 print(f"🏆 Best: {pv_san[0]} ({best_value:.1f}) | PV: {' '.join(pv_san)} | Speed: {nodes_per_second:.0f} nodes/s")
-                print(f"📊 (Material: {final_components['material']}, Position: {final_components['position']}, Mobility: {final_components['mobility']})")
+                print(f"📊 Overall: {overall_eval:.1f} (Material: {final_components['material']:.1f}, Position: {final_components['position']:.1f}, Mobility: {final_components['mobility']:.1f})")
         return best_move
 
     def _minimax(self, board, depth, alpha, beta, variation=None):
@@ -394,6 +448,13 @@ class MinimaxEngine(Engine):
         Returns:
             Tuple of (evaluation, principal_variation)
         """
+        # Check time budget (only if we have a time budget and we're at the root level)
+        if hasattr(self, 'search_start_time') and hasattr(self, 'time_budget') and self.time_budget is not None:
+            elapsed_time = time.time() - self.search_start_time
+            if elapsed_time >= self.time_budget:
+                # Return a neutral evaluation to stop the search
+                return 0, []
+        
         # Count this node
         self.nodes_searched += 1
         
@@ -435,7 +496,20 @@ class MinimaxEngine(Engine):
         
         # Base case: game over
         if board.is_game_over():
-            return self.evaluate(board), []
+            eval_score = self.evaluate(board)
+            
+            # Apply checkmate distance correction
+            if board.is_checkmate():
+                # Current position is checkmate, distance = 0
+                distance_to_mate = 0
+                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                
+                if eval_score > 0:  # White wins
+                    eval_score = checkmate_bonus - distance_to_mate
+                else:  # Black wins
+                    eval_score = -(checkmate_bonus - distance_to_mate)
+            
+            return eval_score, []
         
         # Use optimized move generation and sorting, with TT best move first if available
         sorted_moves = self._get_sorted_moves_optimized(board, tt_best_move)
@@ -457,6 +531,20 @@ class MinimaxEngine(Engine):
                 eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
+                
+                # Apply checkmate distance correction for winning positions
+                if abs(eval) >= 50000:  # Likely a checkmate score
+                    checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                    if eval > 0:  # White is winning
+                        # Calculate distance: if eval is checkmate_bonus - distance, then distance = checkmate_bonus - eval
+                        distance_to_mate = max(0, checkmate_bonus - eval)
+                        # Apply correction: prefer shorter mates
+                        eval = checkmate_bonus - distance_to_mate
+                    else:  # Black is winning
+                        # Calculate distance: if eval is -(checkmate_bonus - distance), then distance = checkmate_bonus + eval
+                        distance_to_mate = max(0, checkmate_bonus + eval)
+                        # Apply correction: prefer shorter mates
+                        eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Update best move if this is better
                 if eval > max_eval:
@@ -505,6 +593,20 @@ class MinimaxEngine(Engine):
                 eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
                 # Undo move
                 board.pop()
+                
+                # Apply checkmate distance correction for winning positions
+                if abs(eval) >= 50000:  # Likely a checkmate score
+                    checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                    if eval > 0:  # White is winning
+                        # Calculate distance: if eval is checkmate_bonus - distance, then distance = checkmate_bonus - eval
+                        distance_to_mate = max(0, checkmate_bonus - eval)
+                        # Apply correction: prefer shorter mates
+                        eval = checkmate_bonus - distance_to_mate
+                    else:  # Black is winning
+                        # Calculate distance: if eval is -(checkmate_bonus - distance), then distance = checkmate_bonus + eval
+                        distance_to_mate = max(0, checkmate_bonus + eval)
+                        # Apply correction: prefer shorter mates
+                        eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Update best move if this is better
                 if eval < min_eval:
@@ -702,26 +804,7 @@ class MinimaxEngine(Engine):
             moves_to_search = list(board.legal_moves)
         else:
             # If not in check, search captures and checks for tactical accuracy
-            captures = []
-            checks = []
-            
-            # Check if we should include checks in quiescence search
-            include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
-            
-            for move in board.legal_moves:
-                if board.is_capture(move):
-                    captures.append(move)
-                elif include_checks:
-                    # Check if move gives check
-                    board.push(move)
-                    if board.is_check():
-                        checks.append(move)
-                    board.pop()
-            
-            # Combine captures first, then checks
-            moves_to_search = captures + checks
-        
-        # If no moves to search, return stand pat evaluation
+            moves_to_search = self._get_quiescence_moves(board)
         if not moves_to_search:
             if is_in_check:
                 # If in check and no legal moves, it's checkmate
@@ -1048,3 +1131,124 @@ class MinimaxEngine(Engine):
             if not self.quiet:
                 print(f"⚠️  Tablebase error: {e}")
             return None 
+    def _get_quiescence_moves(self, board):
+        """
+        Get moves to search in quiescence, including defensive moves based on configuration.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            List of moves to search in quiescence
+        """
+        moves_to_search = []
+        
+        # Always include captures
+        captures = [move for move in board.legal_moves if board.is_capture(move)]
+        moves_to_search.extend(captures)
+        
+        # Include checks if configured
+        include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
+        if include_checks:
+            checks = []
+            for move in board.legal_moves:
+                if not board.is_capture(move):
+                    board.push(move)
+                    if board.is_check():
+                        checks.append(move)
+                    board.pop()
+            moves_to_search.extend(checks)
+        
+        # Include defensive moves based on configuration
+        include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
+        include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
+        
+        if include_queen_defense or include_value_threshold:
+            defensive_moves = self._get_defensive_moves(board, include_queen_defense, include_value_threshold)
+            moves_to_search.extend(defensive_moves)
+        
+        return moves_to_search
+    
+    def _get_defensive_moves(self, board, include_queen_defense, include_value_threshold):
+        """
+        Get defensive moves based on configuration options.
+        
+        Args:
+            board: Current board state
+            include_queen_defense: Whether to include queen defensive moves
+            include_value_threshold: Whether to include value threshold defensive moves
+            
+        Returns:
+            List of defensive moves
+        """
+        defensive_moves = []
+        piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
+        value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_value_threshold", 500)
+        
+        for move in board.legal_moves:
+            # Skip moves already included (captures and checks)
+            if board.is_capture(move) or self._gives_check(board, move):
+                continue
+            
+            # Check if this move is defensive based on configuration
+            if self._is_defensive_move(board, move, include_queen_defense, include_value_threshold, piece_values, value_threshold):
+                defensive_moves.append(move)
+        
+        return defensive_moves
+    
+    def _is_defensive_move(self, board, move, include_queen_defense, include_value_threshold, piece_values, value_threshold):
+        """
+        Check if a move is defensive based on configuration options.
+        
+        Args:
+            board: Current board state
+            move: The move to check
+            include_queen_defense: Whether to include queen defensive moves
+            include_value_threshold: Whether to include value threshold defensive moves
+            piece_values: Dictionary of piece values
+            value_threshold: Value threshold for defensive moves
+            
+        Returns:
+            True if the move is defensive, False otherwise
+        """
+        if move.from_square is None:
+            return False
+        
+        piece = board.piece_at(move.from_square)
+        if piece is None or piece.color != board.turn:
+            return False
+        
+        # Check if the piece is under attack
+        if not board.is_attacked_by(not board.turn, move.from_square):
+            return False
+        
+        # Queen defense: only consider queen defensive moves
+        if include_queen_defense and piece.piece_type == chess.QUEEN:
+            return True
+        
+        # Value threshold: consider moves for pieces above value threshold
+        if include_value_threshold:
+            piece_symbol = piece.symbol().upper()
+            if piece_symbol in piece_values:
+                piece_value = piece_values[piece_symbol]
+                if piece_value >= value_threshold:
+                    return True
+        
+        return False
+    
+    def _gives_check(self, board, move):
+        """
+        Check if a move gives check.
+        
+        Args:
+            board: Current board state
+            move: The move to check
+            
+        Returns:
+            True if the move gives check, False otherwise
+        """
+        board.push(move)
+        gives_check = board.is_check()
+        board.pop()
+        return gives_check
+

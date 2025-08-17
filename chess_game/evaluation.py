@@ -112,9 +112,11 @@ class HandcraftedEvaluator(BaseEvaluator):
                 "knight": 320,
                 "bishop": 330,
                 "rook": 500,
-                "queen": 900,
-                "king": 20000
+                "queen": 900
             },
+            "total_piece_values": 8180,
+            "simplification_material_diff_threshold": 600,
+            "simplification_material_diff_multiplier": 0.001,
             "checkmate_bonus": 100000,
             "draw_value": 0,
             "quiescence_depth_limit": 10,
@@ -185,9 +187,16 @@ class HandcraftedEvaluator(BaseEvaluator):
             chess.KNIGHT: self.config["piece_values"]["knight"],
             chess.BISHOP: self.config["piece_values"]["bishop"],
             chess.ROOK: self.config["piece_values"]["rook"],
-            chess.QUEEN: self.config["piece_values"]["queen"],
-            chess.KING: self.config["piece_values"]["king"]
+            chess.QUEEN: self.config["piece_values"]["queen"]
         }
+        
+        # Calculate total piece values for material simplification
+        # Use config value if available, otherwise calculate from piece values
+        self.total_piece_values = self.config.get("total_piece_values", sum(self.piece_values.values()))
+        
+        # Load simplification parameters
+        self.simplification_threshold = self.config.get("simplification_material_diff_threshold", 600)
+        self.simplification_multiplier = self.config.get("simplification_material_diff_multiplier", 0.001)
     
     def _init_piece_square_tables(self):
         """Initialize piece-square tables for positional evaluation"""
@@ -239,16 +248,16 @@ class HandcraftedEvaluator(BaseEvaluator):
             0, 0, 0, 0, 0, 0, 0, 0                # 8th rank - neutral
         ]
         
-        # Queen table - encourage central control
+        # Queen table - penalize central squares, prefer starting position
         self.queen_table = [
-            -10, -5, -5, -2, -2, -5, -5, -10,
-            -5, 0, 0, 0, 0, 0, 0, -5,
-            -5, 0, 2, 2, 2, 2, 0, -5,
-            -2, 0, 2, 2, 2, 2, 0, -2,
-            0, 0, 2, 2, 2, 2, 0, -2,
-            -5, 2, 2, 2, 2, 2, 0, -5,
-            -5, 0, 2, 0, 0, 0, 0, -5,
-            -10, -5, -5, -2, -2, -5, -5, -10
+            -5, -5, -5, -5, -5, -5, -5, -5,     # 1st rank - safe starting position (baseline)
+            -15, -10, -5, -5, -5, -5, -10, -15,  # 2nd rank - less negative than before
+            -25, -20, -15, -10, -10, -15, -20, -25,  # 3rd rank - penalize central squares
+            -20, -15, -10, -5, -5, -10, -15, -20,    # 4th rank - penalize central squares
+            -15, -10, -5, -5, -5, -5, -10, -15,        # 5th rank - penalize central squares
+            -20, -15, -10, -5, -5, -10, -15, -20,    # 6th rank - penalize central squares (was positive)
+            -25, -20, -15, -10, -10, -15, -20, -25,  # 7th rank - penalize central squares (was moderate)
+            -30, -25, -20, -15, -15, -20, -25, -30   # 8th rank - strongly penalize opponent's back rank
         ]
         
         # King table - encourage castling and safety
@@ -437,12 +446,15 @@ class HandcraftedEvaluator(BaseEvaluator):
         }
     
     def _evaluate_material(self, board: chess.Board) -> float:
-        """Evaluate material balance using optimized bitboard operations"""
+        """Evaluate material balance using optimized bitboard operations with simplification logic"""
         material_score = 0
         
         # Cache bishop counts for reuse
         white_bishops = 0
         black_bishops = 0
+        
+        # Calculate total material on board for simplification
+        total_material_on_board = 0
         
         for piece_type in self.piece_values:
             # Use bitboard operations instead of len() for better performance
@@ -450,8 +462,13 @@ class HandcraftedEvaluator(BaseEvaluator):
             black_bb = board.pieces(piece_type, chess.BLACK)
             white_count = chess.popcount(white_bb)
             black_count = chess.popcount(black_bb)
-            material_score += white_count * self.piece_values[piece_type]
-            material_score -= black_count * self.piece_values[piece_type]
+            
+            piece_value = self.piece_values[piece_type]
+            material_score += white_count * piece_value
+            material_score -= black_count * piece_value
+            
+            # Track total material on board (both sides)
+            total_material_on_board += (white_count + black_count) * piece_value
             
             # Cache bishop counts for bishop pair bonus
             if piece_type == chess.BISHOP:
@@ -464,6 +481,17 @@ class HandcraftedEvaluator(BaseEvaluator):
             material_score += bishop_pair_bonus
         if black_bishops >= 2:
             material_score -= bishop_pair_bonus
+        
+        # Apply material simplification logic
+        material_diff_abs = abs(material_score)
+        if material_diff_abs > self.simplification_threshold:
+            # Calculate simplification factor
+            # remaining_material is the material that has been captured/traded
+            remaining_material = self.total_piece_values - total_material_on_board
+            simplification_factor = 1 + self.simplification_multiplier * remaining_material
+            
+            # Apply simplification to material score
+            material_score *= simplification_factor
         
         return material_score
     
@@ -830,12 +858,12 @@ class HandcraftedEvaluator(BaseEvaluator):
     
 
     
-    def _evaluate_checkmate(self, board: chess.Board) -> float:
+    def _evaluate_checkmate(self, board: chess.Board, distance_to_mate: int = 0) -> float:
         """Evaluate checkmate positions"""
         if board.turn:  # White is checkmated
-            return -self.config["checkmate_bonus"]
+            return -(self.config["checkmate_bonus"] - distance_to_mate)
         else:  # Black is checkmated
-            return self.config["checkmate_bonus"]
+            return self.config["checkmate_bonus"] - distance_to_mate
     
     def get_name(self) -> str:
         return "HandcraftedEvaluator"
