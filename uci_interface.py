@@ -25,6 +25,7 @@ class UCIEngine:
     def __init__(self):
         self.board = chess.Board()
         self.thinking_time = 1000  # milliseconds
+        self.move_history = []  # Track move history for repetition detection
         # Read depth from config file, default to 4 if not found
         try:
             from chess_game.engine import MinimaxEngine
@@ -80,6 +81,7 @@ class UCIEngine:
                 elif line == "ucinewgame":
                     self.board = chess.Board()
                     self.move_number = 0
+                    self.move_history = []  # Reset move history
                     
             except EOFError:
                 break
@@ -114,11 +116,13 @@ class UCIEngine:
             
         if parts[1] == "startpos":
             self.board = chess.Board()
+            self.move_history = []  # Reset move history
             if len(parts) > 2 and parts[2] == "moves":
                 for move_str in parts[3:]:
                     try:
                         move = chess.Move.from_uci(move_str)
                         self.board.push(move)
+                        self.move_history.append(move)  # Track move history
                     except ValueError:
                         pass
         elif parts[1] == "fen":
@@ -153,13 +157,15 @@ class UCIEngine:
                 depth = int(parts[i + 1])
             i += 2
         
-        # Update engine with new depth (use config file depth if not explicitly set)
-        if depth == self.depth_limit:
-            # Use config file depth
-            self.engine = LoggingEngine(log_callback=self.log)
-        else:
-            # Use explicit depth override
-            self.engine = LoggingEngine(depth=depth, log_callback=self.log)
+        # Only recreate engine if depth actually changed
+        if not hasattr(self, '_current_depth') or self._current_depth != depth:
+            if depth == self.depth_limit:
+                # Use config file depth
+                self.engine = LoggingEngine(log_callback=self.log)
+            else:
+                # Use explicit depth override
+                self.engine = LoggingEngine(depth=depth, log_callback=self.log)
+            self._current_depth = depth
         
         # Increment move number and log move start
         self.move_number += 1
@@ -185,6 +191,41 @@ class UCIEngine:
         
         self.log(f"Side to move: {'White' if self.board.turn else 'Black'}")
         self.log(f"Search depth: {depth}")
+        self.log(f"Board FEN: {self.board.fen()}")
+        self.log(f"Move count: {self.board.fullmove_number}")
+        self.log(f"Half-move clock: {self.board.halfmove_clock}")
+        
+        # Show recent move history (last 10 moves)
+        if len(self.board.move_stack) > 0:
+            recent_moves = []
+            for i, move in enumerate(self.board.move_stack[-10:]):
+                # Create a temporary board to get SAN notation
+                temp_board = chess.Board()
+                for j, prev_move in enumerate(self.board.move_stack[:len(self.board.move_stack)-10+i]):
+                    temp_board.push(prev_move)
+                try:
+                    san_move = temp_board.san(move)
+                    recent_moves.append(san_move)
+                except:
+                    recent_moves.append(move.uci())
+            self.log(f"Recent moves: {' '.join(recent_moves)}")
+        
+        # Check for draw conditions
+        repetition_detected = False
+        if self.board.is_repetition():
+            self.log("⚠️ 3-fold repetition detected!")
+            repetition_detected = True
+        elif self._check_repetition_with_history():
+            self.log("⚠️ 3-fold repetition detected (using move history)!")
+            repetition_detected = True
+        if self.board.is_fifty_moves():
+            self.log("⚠️ 50-move rule draw detected!")
+        if self.board.is_insufficient_material():
+            self.log("⚠️ Insufficient material draw detected!")
+        if self.board.is_stalemate():
+            self.log("⚠️ Stalemate detected!")
+        if self.board.is_checkmate():
+            self.log("⚠️ Checkmate detected!")
         
         # Calculate time budget
         time_budget = None
@@ -198,7 +239,7 @@ class UCIEngine:
         
         # Find best move
         start_time = time.time()
-        best_move = self.engine.get_move(self.board, time_budget)
+        best_move = self.engine.get_move(self.board, time_budget, repetition_detected)
         elapsed = (time.time() - start_time) * 1000
         
         # Determine if search completed or was interrupted
@@ -221,6 +262,29 @@ class UCIEngine:
             else:
                 self.engine.logger.log_error("No move generated, resigning")
             print("bestmove 0000")  # Resign
+
+    def _check_repetition_with_history(self):
+        """Check for 3-fold repetition using move history"""
+        if len(self.move_history) < 6:  # Need at least 6 moves for 3-fold repetition
+            return False
+        
+        # Create a board and replay moves to check for repetition
+        temp_board = chess.Board()
+        position_count = {}
+        
+        # Count the starting position
+        position_count[temp_board._transposition_key()] = 1
+        
+        for move in self.move_history:
+            temp_board.push(move)
+            pos_key = temp_board._transposition_key()
+            position_count[pos_key] = position_count.get(pos_key, 0) + 1
+            
+            # Check if current position has occurred 3 times
+            if position_count[pos_key] >= 3:
+                return True
+        
+        return False
 
 def main():
     """Main entry point"""

@@ -165,8 +165,12 @@ class MinimaxEngine(Engine):
                     return -checkmate_bonus, []
                 else:  # White wins (Black to move but checkmated)
                     return checkmate_bonus, []
-            elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves() or board.is_repetition():
-                return 0, []  # Draw
+            elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
+                draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
+                return draw_value, []  # Draw
+            elif board.is_repetition():
+                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                return repetition_eval, []  # 3-fold repetition
         
         # Leaf node: use quiescence search
         if depth == 0:
@@ -573,13 +577,14 @@ class MinimaxEngine(Engine):
                 print(f"⚠️  Could not initialize tablebase: {e}")
             self.tablebase = None
 
-    def get_move(self, board, time_budget=None):
+    def get_move(self, board, time_budget=None, repetition_detected=False):
         """
         Find the best move for the current side to move.
         
         Args:
             board: Current chess board state
             time_budget: Maximum time to spend on this move in seconds (None for unlimited)
+            repetition_detected: Whether the current position is a 3-fold repetition
             
         Returns:
             Best move found by the search
@@ -641,6 +646,7 @@ class MinimaxEngine(Engine):
         self.time_budget = time_budget  # Store time budget for minimax function
         self.nodes_searched = 0
         self.search_interrupted = False  # Track if search was interrupted by time budget
+        self.repetition_detected = repetition_detected  # Store repetition information
         
         # Phase 1: Perform shallow search for move ordering (no visualization)
         sorted_moves = self._order_moves_with_shallow_search(board)
@@ -824,18 +830,23 @@ class MinimaxEngine(Engine):
         
         # Base case: game over
         if board.is_game_over():
-            eval_score = self.evaluate(board)
-            
-            # Apply checkmate distance correction
             if board.is_checkmate():
-                # Current position is checkmate, distance = 0
-                distance_to_mate = 0
+                # Checkmate evaluation
                 checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
-                
-                if eval_score > 0:  # White wins
-                    eval_score = checkmate_bonus - distance_to_mate
-                else:  # Black wins
-                    eval_score = -(checkmate_bonus - distance_to_mate)
+                if board.turn:  # Black wins (White to move but checkmated)
+                    eval_score = -checkmate_bonus
+                else:  # White wins (Black to move but checkmated)
+                    eval_score = checkmate_bonus
+            elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
+                # Draw conditions (except repetition)
+                eval_score = self.evaluation_manager.evaluator.config.get("draw_value", 0)
+            elif board.is_repetition():
+                # 3-fold repetition - can be evaluated differently
+                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                eval_score = repetition_eval
+            else:
+                # Other game over conditions
+                eval_score = self.evaluate(board)
             
             # Exit node for visualization
             self.visualizer.exit_node(eval_score, "TERMINAL", [], 0, 0)
@@ -879,6 +890,16 @@ class MinimaxEngine(Engine):
                         distance_to_mate = len(line)
                         # Apply correction: prefer shorter mates
                         eval = -(checkmate_bonus - distance_to_mate)
+                
+                # Apply repetition penalty/bonus based on current position
+                if hasattr(self, 'repetition_detected') and self.repetition_detected:
+                    repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                    # If we're winning and this move leads to repetition, penalize it
+                    # If we're losing and this move leads to repetition, prefer it
+                    if eval > 100:  # White is winning
+                        eval = repetition_eval  # Prefer draw over winning
+                    elif eval < -100:  # White is losing
+                        eval = repetition_eval  # Prefer draw over losing
                 
                 # Update best move if this is better
                 if eval > max_eval:
@@ -956,6 +977,16 @@ class MinimaxEngine(Engine):
                         distance_to_mate = len(line)
                         # Apply correction: prefer shorter mates
                         eval = -(checkmate_bonus - distance_to_mate)
+                
+                # Apply repetition penalty/bonus based on current position
+                if hasattr(self, 'repetition_detected') and self.repetition_detected:
+                    repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                    # If we're winning and this move leads to repetition, penalize it
+                    # If we're losing and this move leads to repetition, prefer it
+                    if eval < -100:  # Black is winning
+                        eval = repetition_eval  # Prefer draw over winning
+                    elif eval > 100:  # Black is losing
+                        eval = repetition_eval  # Prefer draw over losing
                 
                 # Update best move if this is better
                 if eval < min_eval:
@@ -1106,7 +1137,24 @@ class MinimaxEngine(Engine):
         
         # Check for game over conditions first
         if board.is_game_over():
-            return self.evaluate(board), []
+            if board.is_checkmate():
+                # Checkmate evaluation
+                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                if board.turn:  # Black wins (White to move but checkmated)
+                    return -checkmate_bonus, []
+                else:  # White wins (Black to move but checkmated)
+                    return checkmate_bonus, []
+            elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
+                # Draw conditions (except repetition)
+                draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
+                return draw_value, []
+            elif board.is_repetition():
+                # 3-fold repetition - can be evaluated differently
+                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                return repetition_eval, []
+            else:
+                # Other game over conditions
+                return self.evaluate(board), []
             
         # Limit quiescence depth to prevent infinite loops
         quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_depth_limit", 10)

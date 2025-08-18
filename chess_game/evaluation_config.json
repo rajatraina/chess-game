@@ -38,6 +38,7 @@
     "time_management_increment_used": 0.8,
     "checkmate_bonus": 100000,
     "draw_value": 0,
+    "repetition_evaluation": 50,
     "quiescence_depth_limit": 8,
     "quiescence_include_checks": true,
     "quiescence_include_queen_defense": false,
