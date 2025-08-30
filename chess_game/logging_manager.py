@@ -2,6 +2,10 @@
 """
 Unified logging manager for chess engine.
 Provides consistent logging for both GUI and UCI interfaces.
+
+IMPORTANT: NEVER use print() statements in the engine code when logging to lichess interface.
+All logging must go through this logging manager to avoid polluting the UCI protocol.
+The lichess interface expects clean UCI communication and any unexpected output will cause warnings.
 """
 
 import time
@@ -35,6 +39,53 @@ class ChessLoggingManager:
             self.log(f"🎭 Current side to move: {'White' if board.turn else 'Black'}")
             self.search_start_time = time.time()
             self.move_order_logged = False
+    
+    def log_iterative_deepening_start(self, starting_depth, max_depth):
+        """Log the start of iterative deepening"""
+        if not self.quiet:
+            self.log(f"🔄 Iterative deepening: {starting_depth} → {max_depth} plies")
+    
+    def log_iteration_start(self, iteration, depth):
+        """Log the start of a specific iteration"""
+        if not self.quiet:
+            self.log(f"🔄 Iteration {iteration}: depth {depth}")
+    
+    def log_iteration_move_order(self, board, moves, max_moves=8):
+        """Log the move order for the current iteration"""
+        if not self.quiet:
+            try:
+                # Convert moves to SAN notation
+                move_sans = []
+                for move in moves[:max_moves]:
+                    try:
+                        move_sans.append(board.san(move))
+                    except Exception:
+                        move_sans.append(move.uci())
+                
+                # Add ellipsis if there are more moves
+                if len(moves) > max_moves:
+                    move_sans.append("...")
+                
+                move_order_str = " ".join(move_sans)
+                self.log(f"🎯 Move order: {move_order_str}")
+            except Exception as e:
+                self.log(f"🎯 Move order: Error generating move order: {e}")
+    
+    def log_iteration_complete(self, depth, iteration_time, best_move_san, best_value):
+        """Log the completion of an iteration"""
+        if not self.quiet:
+            self.log(f"✅ Depth {depth} completed in {iteration_time:.2f}s: {best_move_san} ({best_value:.1f})")
+    
+    def log_iterative_deepening_timeout(self, current_depth, time_used, time_budget):
+        """Log when iterative deepening times out"""
+        if not self.quiet:
+            self.log(f"⏰ Timeout at depth {current_depth} ({time_used:.2f}s/{time_budget:.2f}s)")
+    
+    def log_iterative_deepening_complete(self, final_depth, total_time, best_move_san, best_value):
+        """Log the completion of iterative deepening"""
+        if not self.quiet:
+            self.log(f"🏁 Iterative deepening complete: depth {final_depth} in {total_time:.2f}s")
+            self.log(f"🎯 Final best move: {best_move_san} ({best_value:.1f})")
     
     def log_move_order(self, board, ordered_moves, max_moves=5):
         """Log the move order from shallow search or other optimization"""

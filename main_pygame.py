@@ -38,9 +38,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Python Chess Game")
     parser.add_argument("--speed", action="store_true", help="Run speed benchmarking instead of GUI")
     parser.add_argument("--quick", action="store_true", help="Run quick speed benchmark (use with --speed)")
+    parser.add_argument("--time-budget", type=float, help="Set time budget in seconds for each move (enables iterative deepening)")
+    parser.add_argument("--runtests", action="store_true", help="Run must-find-moves tests")
     args = parser.parse_args()
     
-    if args.speed:
+    if args.runtests:
+        # Run must-find-moves tests
+        try:
+            from tests.test_must_find_moves import run_tests
+            success = run_tests()
+            sys.exit(0 if success else 1)
+        except ImportError as e:
+            print(f"❌ Error importing test module: {e}")
+            sys.exit(1)
+        except Exception as e:
+            print(f"❌ Error running tests: {e}")
+            sys.exit(1)
+    elif args.speed:
         # Speed testing mode
         if args.quick:
             # Quick speed test
@@ -71,9 +85,15 @@ if __name__ == "__main__":
         # Check for tablebases before starting the game
         tablebases_available = check_tablebases()
         
+        # Display time budget information if set
+        if args.time_budget:
+            print(f"⏰ Time budget mode: {args.time_budget} seconds per move")
+            print("🔄 Iterative deepening will be enabled!")
+            print("")
+        
         print("")
         print("🚀 Starting chess application...")
         print("=" * 40)
         
-        app = PygameChessGUI()
+        app = PygameChessGUI(time_budget=args.time_budget)
         app.run() 

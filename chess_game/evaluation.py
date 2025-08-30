@@ -259,7 +259,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.bishop_table = [
             -10, -5, -5, -5, -5, -5, -5, -10,
             -5, 0, 0, 0, 0, 0, 0, -5,
-            -5, 0, 2, 5, 5, 2, 0, -5,
+            -5, 0, 2, 0, 0, 2, 0, -5,
             -5, 2, 2, 5, 5, 2, 2, -5,
             -5, 0, 5, 5, 5, 5, 0, -5,
             -5, 5, 5, 5, 5, 5, 5, -5,
@@ -320,11 +320,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         """Initialize endgame-specific piece-square tables"""
         # Endgame pawn table - strongly encourage advancement
         self.endgame_pawn_table = [
-            30, 30, 30, 30, 30, 30, 30, 30,      # 8th rank - promotion
-            20, 20, 20, 20, 20, 20, 20, 20, # 7th rank - very high value
-            15, 15, 15, 15, 15, 15, 15, 15, # 6th rank - high value
-            10, 10, 10, 10, 10, 10, 10, 10, # 5th rank - good value
-            5, 5, 5, 5, 5, 5, 5, 5,        # 4th rank - moderate value
+            50, 50, 50, 50, 50, 50, 50, 50,      # 8th rank - promotion
+            40, 40, 40, 40, 40, 40, 40, 40, # 7th rank - very high value
+            30, 30, 30, 30, 30, 30, 30, 30, # 6th rank - high value
+            20, 20, 20, 20, 20, 20, 20, 20, # 5th rank - good value
+            10, 10, 10, 10, 10, 10, 10, 10,        # 4th rank - moderate value
             0, 0, 0, 0, 0, 0, 0, 0,        # 3rd rank - neutral
             -5, -5, -5, -5, -5, -5, -5, -5, # 2nd rank - discourage
             -10, -10, -10, -10, -10, -10, -10, -10 # 1st rank - strongly discourage
@@ -335,8 +335,8 @@ class HandcraftedEvaluator(BaseEvaluator):
             -10, -5, 0, 5, 5, 0, -5, -10,   # 8th rank - moderate
             -5, 0, 5, 10, 10, 5, 0, -5,     # 7th rank - good
             0, 5, 10, 15, 15, 10, 5, 0,      # 6th rank - very good
-            5, 10, 15, 20, 20, 15, 10, 5,    # 5th rank - excellent
-            5, 10, 15, 20, 20, 15, 10, 5,    # 4th rank - excellent
+            5, 10, 15, 15, 15, 15, 10, 5,    # 5th rank - excellent
+            5, 10, 15, 15, 15, 15, 10, 5,    # 4th rank - excellent
             0, 5, 10, 15, 15, 10, 5, 0,      # 3rd rank - very good
             -5, 0, 5, 10, 10, 5, 0, -5,     # 2nd rank - good
             -10, -5, 0, 5, 5, 0, -5, -10     # 1st rank - moderate
@@ -531,16 +531,17 @@ class HandcraftedEvaluator(BaseEvaluator):
         if black_bishops >= 2:
             material_score -= bishop_pair_bonus
         
-        # Apply material simplification logic
-        material_diff_abs = abs(material_score)
-        if material_diff_abs > self.simplification_threshold:
-            # Calculate simplification factor
-            # remaining_material is the material that has been captured/traded
-            remaining_material = self.total_piece_values - total_material_on_board
-            simplification_factor = 1 + self.simplification_multiplier * remaining_material
-            
-            # Apply simplification to material score
-            material_score *= simplification_factor
+        # TEMPORARILY DISABLED: Material simplification may be causing absurd evaluations
+        # TODO: Investigate and fix simplification logic
+        # material_diff_abs = abs(material_score)
+        # if material_diff_abs > self.simplification_threshold:
+        #     # Calculate simplification factor
+        #     # remaining_material is the material that has been captured/traded
+        #     remaining_material = self.total_piece_values - total_material_on_board
+        #     simplification_factor = 1 + self.simplification_multiplier * remaining_material
+        #     
+        #     # Apply simplification to material score
+        #     material_score *= simplification_factor
         
         # Cache the material evaluation
         if self.material_cache is not None:
@@ -633,6 +634,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Evaluate castling bonus
         castling_bonus = self._evaluate_castling_bonus(board)
         king_safety_score += castling_bonus
+        
+        # Evaluate pawn shield bonus
+        pawn_shield_score = self._evaluate_pawn_shield(board)
+        king_safety_score += pawn_shield_score
         
         return king_safety_score
     
@@ -749,43 +754,45 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _count_pawn_shield(self, board: chess.Board, king_square: int, color: bool) -> int:
         """
-        Count friendly pawns in the 3 files closest to the king (a-c or f-h).
+        Count how many shield files have a pawn of our color.
+        Only counts when king is on queenside (a-c) or kingside (f-h).
         
         Args:
             board: Current board state
             king_square: Square where the king is located
-            color: Color of the king (WHITE or BLACK)
+            color: Color of the pieces (WHITE or BLACK)
             
         Returns:
-            Number of friendly pawns in the 3 files closest to the king
+            1 if all shield files have a pawn of our color, 0 otherwise
         """
         king_file = chess.square_file(king_square)
         
-        # Determine which 3 files are closest to the king
+        # Only count pawn shield when king is on queenside or kingside
         if king_file <= 2:  # King is on a, b, or c file (queenside)
             # Use files a, b, c (0, 1, 2)
             shield_files = [0, 1, 2]
         elif king_file >= 5:  # King is on f, g, or h file (kingside)
             # Use files f, g, h (5, 6, 7)
             shield_files = [5, 6, 7]
-        else:  # King is on d or e file (center)
-            # Use the 3 files closest to the king
-            if king_file == 3:  # d file
-                shield_files = [2, 3, 4]  # c, d, e
-            else:  # e file
-                shield_files = [3, 4, 5]  # d, e, f
+        else:  # King is on d or e file (center) - no pawn shield
+            return 0
         
-        # Count pawns in the 3 closest files
-        pawn_count = 0
+        # Check if each shield file has at least one pawn of our color
+        files_with_pawns = 0
         for file in shield_files:
+            has_pawn = False
             # Check all ranks for pawns in this file
             for rank in range(8):
                 square = chess.square(file, rank)
                 piece = board.piece_at(square)
                 if piece and piece.piece_type == chess.PAWN and piece.color == color:
-                    pawn_count += 1
+                    has_pawn = True
+                    break
+            if has_pawn:
+                files_with_pawns += 1
         
-        return pawn_count
+        # Return 1 only if all shield files have a pawn of our color
+        return 1 if files_with_pawns == len(shield_files) else 0
     
     def _evaluate_piece_mobility(self, board: chess.Board, piece_type: int, color: bool, 
                                 friendly_pieces: int, enemy_pieces: int) -> float:
@@ -967,9 +974,12 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _evaluate_checkmate(self, board: chess.Board, distance_to_mate: int = 0) -> float:
         """Evaluate checkmate positions"""
-        if board.turn:  # White is checkmated
+        # When board.is_checkmate() is True, the side to move is checkmated
+        # So if board.turn is True, White is checkmated (good for Black)
+        # If board.turn is False, Black is checkmated (good for White)
+        if board.turn:  # White is checkmated (good for Black)
             return -(self.config["checkmate_bonus"] - distance_to_mate)
-        else:  # Black is checkmated
+        else:  # Black is checkmated (good for White)
             return self.config["checkmate_bonus"] - distance_to_mate
     
     def get_name(self) -> str:

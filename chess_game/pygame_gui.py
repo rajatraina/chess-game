@@ -14,7 +14,7 @@ import time
 ASSET_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'pieces')
 
 class PygameChessGUI:
-    def __init__(self):
+    def __init__(self, time_budget=None):
         pygame.init()
         self.square_size = 60  # Use native image size
         self.width = self.square_size * 8
@@ -32,6 +32,9 @@ class PygameChessGUI:
         self.engine = MinimaxEngine(evaluator_type="handcrafted")  # Use config file depth
         # Override the engine's logger to use our GUI logger
         self.engine.logger = logger
+        
+        # Store time budget for iterative deepening
+        self.time_budget = time_budget
         
         # Computer vs Computer mode tracking
         self.computer_vs_computer_mode = False
@@ -144,7 +147,7 @@ class PygameChessGUI:
                     nodes_before = self.engine.nodes_searched
                     print(f"🤖 Computer vs Computer: {'White' if chess_board.turn else 'Black'} to move")
                 
-                move = self.engine.get_move(chess_board)
+                move = self.engine.get_move(chess_board, time_budget=self.time_budget)
                 
                 if move:
                     # Update statistics for computer vs computer mode

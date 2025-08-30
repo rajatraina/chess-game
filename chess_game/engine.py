@@ -13,10 +13,22 @@ except ImportError:
     from logging_manager import get_logger
     from search_visualizer import get_visualizer, configure_visualizer
 
+# IMPORTANT: All logging must use self.logger methods, never print() statements.
+# This ensures clean UCI protocol communication with lichess interface.
+
 # Transposition table entry types
 EXACT = 0
 LOWER_BOUND = 1
 UPPER_BOUND = 2
+
+class EarlyExitException(Exception):
+    """Exception raised when search needs to exit early due to time budget"""
+    def __init__(self, best_move, best_value, best_line, reason):
+        self.best_move = best_move
+        self.best_value = best_value
+        self.best_line = best_line
+        self.reason = reason
+        super().__init__(f"Early exit: {reason}")
 
 class TranspositionTableEntry:
     """Represents a single entry in the transposition table"""
@@ -109,6 +121,11 @@ class MinimaxEngine(Engine):
         # Load move ordering parameters
         self.moveorder_shallow_search_depth = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_depth", 2)
         self.moveorder_shallow_search_quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_quiescence_depth_limit", 2)
+        
+        # Load time budget parameters
+        self.time_budget_check_frequency = self.evaluation_manager.evaluator.config.get("time_budget_check_frequency", 1000)
+        self.time_budget_early_exit_enabled = self.evaluation_manager.evaluator.config.get("time_budget_early_exit_enabled", True)
+        self.time_budget_safety_margin = self.evaluation_manager.evaluator.config.get("time_budget_safety_margin", 0.1)
         
         # Initialize search visualizer
         self.visualizer = get_visualizer()
@@ -345,7 +362,7 @@ class MinimaxEngine(Engine):
             List of moves ordered by shallow search evaluation
         """
         if not self.quiet:
-            print(f"🔍 Performing shallow search (depth {self.moveorder_shallow_search_depth}) for move ordering...")
+            self.logger.log_info(f"Performing shallow search (depth {self.moveorder_shallow_search_depth}) for move ordering...")
         
         # Store original node count
         original_nodes = self.nodes_searched
@@ -574,7 +591,7 @@ class MinimaxEngine(Engine):
             
         except Exception as e:
             if not self.quiet:
-                print(f"⚠️  Could not initialize tablebase: {e}")
+                self.logger.log_warning(f"Could not initialize tablebase: {e}")
             self.tablebase = None
 
     def get_move(self, board, time_budget=None, repetition_detected=False):
@@ -601,44 +618,19 @@ class MinimaxEngine(Engine):
         if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
             self.evaluation_manager.evaluator._set_starting_position(board)
         
-        # Check if this is an endgame position for deeper search
-        is_endgame = self._is_endgame_position(board)
-        search_depth = self.depth
-        
-        if is_endgame:
-            endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
-            search_depth = max(self.depth, endgame_depth)
-            if not self.quiet:
-                print(f"🎯 Endgame detected - using depth {search_depth}")
-        best_move = None
-        # Initialize best_value based on whose turn it is
-        # White wants to maximize (highest value), Black wants to minimize (lowest value)
-        best_value = -float('inf') if board.turn else float('inf')
-        best_line = []
-        alpha = -float('inf')
-        beta = float('inf')
-        
-        # Store best line and value as instance variables for logging
-        self.best_line = []
-        self.best_value = 0
-        
-        self.logger.log_search_start(board, search_depth)
-        
-        # Start search visualization if enabled
-        self.visualizer.start_search(board, search_depth)
-        
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board):
             if not self.quiet:
-                print(f"🔍 Checking tablebase for position with {sum(len(board.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])} pieces")
+                piece_count = sum(len(board.pieces(piece_type, color)) for piece_type in chess.PIECE_TYPES for color in [chess.WHITE, chess.BLACK])
+                self.logger.log_info(f"Checking tablebase for position with {piece_count} pieces")
             tablebase_move = self.get_tablebase_move(board)
             if tablebase_move:
                 if not self.quiet:
-                    print(f"🎯 Using tablebase move: {board.san(tablebase_move)}")
+                    self.logger.log_info(f"Using tablebase move: {board.san(tablebase_move)}")
                 return tablebase_move
             else:
                 if not self.quiet:
-                    print("⚠️  Tablebase lookup failed, using standard search")
+                    self.logger.log_warning("Tablebase lookup failed, using standard search")
         
         # Start timing the search and reset node counter
         start_time = time.time()
@@ -648,114 +640,283 @@ class MinimaxEngine(Engine):
         self.search_interrupted = False  # Track if search was interrupted by time budget
         self.repetition_detected = repetition_detected  # Store repetition information
         
-        # Phase 1: Perform shallow search for move ordering (no visualization)
+        # Use unified iterative deepening search for all cases
+        min_time_budget = self.evaluation_manager.evaluator.config.get("search_deepening_min_time_budget", 30.0)
+        
+        if time_budget is None:
+            # No time budget: use iterative deepening with no time limit (for pygame)
+            self.logger.log_info("No time budget provided, using iterative deepening without time limit")
+            return self._iterative_deepening_search(board, start_time, None, None)
+        elif time_budget < min_time_budget:
+            # Time budget too small: use iterative deepening with limited depth (for lichess with very short time)
+            self.logger.log_info(f"Time budget {time_budget:.1f}s below minimum {min_time_budget}s, using limited iterative deepening")
+            return self._iterative_deepening_search(board, start_time, time_budget, "limited")
+        else:
+            # Sufficient time budget: use full iterative deepening (for lichess)
+            self.logger.log_info(f"Time budget {time_budget:.1f}s sufficient for full iterative deepening (min: {min_time_budget}s)")
+            return self._iterative_deepening_search(board, start_time, time_budget, "full")
+
+
+
+    def _iterative_deepening_search(self, board, start_time, time_budget, search_mode=None):
+        """
+        Perform iterative deepening search (for lichess interface).
+        
+        Args:
+            board: Current board state
+            start_time: Search start time
+            time_budget: Time budget in seconds
+            search_mode: "limited", "full", or None for unlimited
+            
+        Returns:
+            Best move found
+        """
+        # Get configuration parameters
+        starting_depth = self.evaluation_manager.evaluator.config.get("search_depth_starting", 3)
+        max_depth = self.evaluation_manager.evaluator.config.get("max_search_depth", 10)
+        time_fraction = self.evaluation_manager.evaluator.config.get("search_deepening_time_budget_fraction", 0.8)
+        
+        # Limit max_depth for limited search mode
+        if search_mode == "limited":
+            max_depth = starting_depth
+            self.logger.log_info(f"Limited search mode: max_depth set to {max_depth}")
+        
+        # Check if this is an endgame position for deeper search
+        is_endgame = self._is_endgame_position(board)
+        if is_endgame:
+            endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
+            starting_depth = max(starting_depth, endgame_depth)
+            max_depth = max(max_depth, endgame_depth)
+            self.logger.log_info(f"Endgame detected - using depths {starting_depth} to {max_depth}")
+        
+        # Initialize best move tracking
+        best_move = None
+        best_value = -float('inf') if board.turn else float('inf')
+        best_line = []
+        
+        # Phase 1: Perform shallow search for initial move ordering
+        self.logger.log_info("Phase 1: Shallow search (depth 2) for move ordering...")
         sorted_moves = self._order_moves_with_shallow_search(board)
         
-        # Phase 2: Clean transposition table after shallow search
-        self._clean_transposition_table_after_shallow_search()
+        # Don't clean transposition table after shallow search for iterative deepening
+        # Keep TT entries for reuse across iterations
         
-        # Evaluate moves in optimal order
-        for move in sorted_moves:
-            # Record move being considered for visualization
-            self.visualizer.record_move_considered(move, board)
-            # Check time budget
-            if time_budget is not None:
-                elapsed_time = time.time() - start_time
-                if elapsed_time >= time_budget:
-                    if not self.quiet:
-                        print(f"⏰ Time budget reached ({elapsed_time:.2f}s >= {time_budget:.2f}s), returning current best move")
-                    self.search_interrupted = True
-                    break
-            
-            # Get the SAN notation before making the move
-            move_san = board.san(move)
-            
-            # Make the move on the board
-            board.push(move)
-            
-            # Search the resulting position
-            # Note: After board.push(move), board.turn has changed to the opponent
-            value, line = self._minimax(board, search_depth - 1, alpha, beta, [move_san])
-            
-            # Undo the move to restore the original board state
-            board.pop()
-            
-            # Update best move based on whose turn it is
-            if board.turn:  # White to move: pick highest evaluation
-                if value > best_value:
-                    best_value = value
-                    best_move = move
-                    best_line = [move] + line
-                    # Update instance variables for logging
-                    self.best_line = best_line
-                    self.best_value = best_value
-                    # Log new best move found during search
-                    self.logger.log_new_best_move(move_san, value)
-                alpha = max(alpha, value)
-            else:  # Black to move: pick lowest evaluation
-                if value < best_value:
-                    best_value = value
-                    best_move = move
-                    best_line = [move] + line
-                    # Update instance variables for logging
-                    self.best_line = best_line
-                    self.best_value = best_value
-                    # Log new best move found during search
-                    self.logger.log_new_best_move(move_san, value)
-                beta = min(beta, value)
+        # Phase 2: Iterative deepening loop
+        current_depth = starting_depth
+        completed_depth = starting_depth  # Track the depth that was actually completed
+        iteration = 1
         
-        # Calculate search time and nodes per second
-        search_time = time.time() - start_time
-        nodes_per_second = self.nodes_searched / search_time if search_time > 0 else 0
+        # Calculate current move number (1-based)
+        current_move_number = len(board.move_stack) // 2 + 1
         
-        # Get transposition table statistics
-        tt_stats = self.get_transposition_stats()
+        # Log iterative deepening start
+        self.logger.log_iterative_deepening_start(starting_depth, max_depth)
         
-        self.logger.log_search_completion(search_time, self.nodes_searched, tt_stats)
-        
-        # Finish search visualization if enabled
-        if best_move:
-            pv_san = []
-            pv_board = board.copy()
-            for m in best_line:
+        while current_depth <= max_depth:
+            # Log iteration start
+            self.logger.log_iteration_start(iteration, current_depth)
+            
+            # Check if we should allow deepening (only after configured start move)
+            iterative_deepening_start_move = self.evaluation_manager.evaluator.config.get("iterative_deepening_start_move", 5)
+            if current_move_number < iterative_deepening_start_move and iteration > 1:
+                self.logger.log_info(f"Move {current_move_number} < {iterative_deepening_start_move}, stopping iterative deepening at depth {current_depth}")
+                break
+            
+            # Initialize for this iteration
+            alpha = -float('inf')
+            beta = float('inf')
+            iteration_best_move = None
+            iteration_best_value = -float('inf') if board.turn else float('inf')
+            iteration_best_line = []
+            
+            # Start search visualization for this iteration
+            self.visualizer.start_search(board, current_depth)
+            
+            # Evaluate moves in optimal order (use previous best move first if available)
+            if iteration > 1 and best_move:
+                # Reorder moves to put previous best move first
+                reordered_moves = [best_move] + [m for m in sorted_moves if m != best_move]
+            else:
+                reordered_moves = sorted_moves
+            
+            # Log move order for this iteration
+            self.logger.log_iteration_move_order(board, reordered_moves)
+            
+            for move in reordered_moves:
+                # Check time budget (only if time_budget is provided)
+                if time_budget is not None:
+                    elapsed_time = time.time() - start_time
+                    if elapsed_time >= time_budget:
+                        self.logger.log_iterative_deepening_timeout(current_depth, elapsed_time, time_budget)
+                        self.search_interrupted = True
+                        break
+                
+                # Record move being considered for visualization
+                self.visualizer.record_move_considered(move, board)
+                
+                # Get the SAN notation before making the move
+                move_san = board.san(move)
+                
+                # Store the original turn before making the move
+                original_turn = board.turn
+                
+                # Make the move on the board
+                board.push(move)
+                
+                # Search the resulting position
                 try:
-                    pv_san.append(pv_board.san(m))
-                    pv_board.push(m)
-                except Exception:
-                    break
-            self.visualizer.finish_search(board.san(best_move), best_value, self.nodes_searched, search_time, pv_san)
+                    value, line = self._minimax(board, current_depth - 1, alpha, beta, [move_san], start_time, time_budget)
+                except EarlyExitException as e:
+                    # Handle early exit - use best move found so far
+                    if e.best_move:
+                        value = e.best_value
+                        line = e.best_line
+                        self.logger.log_info(f"Early exit during search: {e.reason}")
+                    else:
+                        # No best move found, use fallback evaluation
+                        value = 0
+                        line = []
+                        self.logger.log_warning(f"Early exit with no best move: {e.reason}")
+                
+                # Undo the move to restore the original board state
+                board.pop()
+                
+
+                
+                # Update best move based on whose turn it is
+                if original_turn:  # White to move: pick highest evaluation
+                    if value > iteration_best_value:
+                        iteration_best_value = value
+                        iteration_best_move = move
+                        iteration_best_line = [move] + line
+                        # Update instance variables for logging
+                        self.best_line = iteration_best_line
+                        self.best_value = iteration_best_value
+                        # Log new best move found during search
+                        self.logger.log_new_best_move(move_san, value)
+                    alpha = max(alpha, value)
+                else:  # Black to move: pick lowest evaluation
+                    if value < iteration_best_value:
+                        iteration_best_value = value
+                        iteration_best_move = move
+                        iteration_best_line = [move] + line
+                        # Update instance variables for logging
+                        self.best_line = iteration_best_line
+                        self.best_value = iteration_best_value
+                        # Log new best move found during search
+                        self.logger.log_new_best_move(move_san, value)
+                    beta = min(beta, value)
             
-            # Export visualization to file
-            self.move_counter += 1
-            viz_file = self.visualizer.export_tree_to_file(self.move_counter)
-            if viz_file:
-                if not self.quiet:
-                    print(f"📄 Search tree exported to: {viz_file}")
-        
-        # Print the best move found with component evaluation
-        if best_move:
-            pv_board = board.copy()
-            pv_san = []
-            for m in best_line:
+            # Update global best move if we found a better one
+            if iteration_best_move:
+                best_move = iteration_best_move
+                best_value = iteration_best_value
+                best_line = iteration_best_line
+            
+            # Log iteration completion
+            iteration_time = time.time() - start_time
+            tt_stats = self.get_transposition_stats()
+            
+            # Get best move SAN for logging
+            best_move_san = "N/A"
+            if iteration_best_move:
                 try:
-                    pv_san.append(pv_board.san(m))
-                    pv_board.push(m)
+                    best_move_san = board.san(iteration_best_move)
                 except Exception:
-                    break
+                    best_move_san = iteration_best_move.uci()
             
-            # Compute evaluation components for the position at the end of the principal variation
-            pv_board = board.copy()
-            for move in best_line:
-                pv_board.push(move)
-            final_components = self.evaluate_with_components(pv_board)
+            self.logger.log_iteration_complete(current_depth, iteration_time, best_move_san, iteration_best_value)
             
-            # Calculate overall evaluation
-            overall_eval = final_components['material'] + final_components['position'] + final_components['mobility']
+            # Update completed depth (this iteration completed successfully)
+            completed_depth = current_depth
             
-            self.logger.log_best_move(board, best_move, best_value, best_line, final_components)
+            # Check if we can go deeper (only if time_budget is provided)
+            if time_budget is not None and iteration_time >= time_budget * time_fraction:
+                self.logger.log_iterative_deepening_timeout(current_depth, iteration_time, time_budget)
+                break
+            
+            # Prepare for next iteration
+            current_depth += 2  # Increment by 2 plies to keep same side to move
+            iteration += 1
+        
+        # Log final search completion
+        total_time = time.time() - start_time
+        self.logger.log_search_completion(total_time, self.nodes_searched, tt_stats)
+        
+        # Log iterative deepening completion
+        best_move_san = "N/A"
+        if best_move:
+            try:
+                best_move_san = board.san(best_move)
+            except Exception:
+                best_move_san = best_move.uci()
+        
+        self.logger.log_iterative_deepening_complete(completed_depth, total_time, best_move_san, best_value)
+        
+        # Safety check: if no best move found, use first legal move
+        if best_move is None:
+            legal_moves = list(board.legal_moves)
+            if legal_moves:
+                best_move = legal_moves[0]
+                self.logger.log_warning(f"No best move found, using first legal move: {board.san(best_move)}")
+            else:
+                self.logger.log_error("No legal moves available!")
+        
+        # Finish search visualization and logging
+        self._finish_search_logging(board, best_move, best_value, best_line, total_time)
+        
         return best_move
 
-    def _minimax(self, board, depth, alpha, beta, variation=None):
+    def _finish_search_logging(self, board, best_move, best_value, best_line, search_time):
+        """
+        Finish search logging and visualization.
+        
+        Args:
+            board: Current board state
+            best_move: Best move found
+            best_value: Best evaluation value
+            best_line: Principal variation
+            search_time: Total search time
+        """
+        if not best_move:
+            return
+        
+        # Finish search visualization if enabled
+        pv_san = []
+        pv_board = board.copy()
+        for m in best_line:
+            try:
+                pv_san.append(pv_board.san(m))
+                pv_board.push(m)
+            except Exception:
+                break
+        self.visualizer.finish_search(board.san(best_move), best_value, self.nodes_searched, search_time, pv_san)
+        
+        # Export visualization to file
+        self.move_counter += 1
+        viz_file = self.visualizer.export_tree_to_file(self.move_counter)
+        if viz_file:
+            self.logger.log_info(f"Search tree exported to: {viz_file}")
+        
+        # Print the best move found with component evaluation
+        pv_board = board.copy()
+        pv_san = []
+        for m in best_line:
+            try:
+                pv_san.append(pv_board.san(m))
+                pv_board.push(m)
+            except Exception:
+                break
+        
+        # Compute evaluation components for the position at the end of the principal variation
+        pv_board = board.copy()
+        for move in best_line:
+            pv_board.push(move)
+        final_components = self.evaluate_with_components(pv_board)
+        
+        self.logger.log_best_move(board, best_move, best_value, best_line, final_components)
+
+    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None):
         """
         Minimax search with alpha-beta pruning with transposition table support.
         
@@ -765,23 +926,37 @@ class MinimaxEngine(Engine):
             alpha: Alpha value for pruning (best score for maximizing player)
             beta: Beta value for pruning (best score for minimizing player)
             variation: The sequence of moves that led to this position (for debugging)
+            start_time: Start time for time budget checking
+            time_budget: Time budget in seconds for early exit
             
         Returns:
             Tuple of (evaluation, principal_variation)
         """
+
         # Enter node for visualization
         self.visualizer.enter_node(board, None, depth, alpha, beta, False)
         
-        # Check time budget (only if we have a time budget and we're at the root level)
-        if hasattr(self, 'search_start_time') and hasattr(self, 'time_budget') and self.time_budget is not None:
-            elapsed_time = time.time() - self.search_start_time
-            if elapsed_time >= self.time_budget:
-                # Return a neutral evaluation to stop the search
-                self.visualizer.exit_node(0, "TIMEOUT", [], 0, 0)
-                return 0, []
-        
         # Count this node
         self.nodes_searched += 1
+        
+        # Check time budget if enabled
+        if (start_time and time_budget and self.time_budget_early_exit_enabled):
+            
+            # Check frequency to avoid performance impact
+            if self.nodes_searched % self.time_budget_check_frequency == 0:
+                elapsed_time = time.time() - start_time
+                
+                if elapsed_time >= time_budget - self.time_budget_safety_margin:
+                    # Raise early exit exception with current best move if available
+                    if hasattr(self, 'current_best_move') and self.current_best_move:
+                        raise EarlyExitException(
+                            self.current_best_move, 
+                            self.current_best_value, 
+                            self.current_best_line, 
+                            "timeout_at_node_start"
+                        )
+                    else:
+                        raise EarlyExitException(None, None, None, "timeout_at_node_start")
         
         # Initialize variation if None
         if variation is None:
@@ -869,49 +1044,68 @@ class MinimaxEngine(Engine):
                 # Get SAN notation before making the move
                 move_san = board.san(move)
                 
+                # Check time budget before processing this move
+                if (start_time and time_budget and self.time_budget_early_exit_enabled):
+                    elapsed_time = time.time() - start_time
+                    
+                    if elapsed_time >= time_budget - self.time_budget_safety_margin:
+                        # Return best move found so far
+                        if best_move:
+                            return max_eval, best_line
+                        else:
+                            raise EarlyExitException(None, None, None, "timeout_before_move")
+                
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
+                try:
+                    eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget)
+                except EarlyExitException as e:
+                    # Propagate early exit up the tree
+                    board.pop()
+                    raise e
                 # Undo move
                 board.pop()
                 
-                # Apply checkmate distance correction for winning positions
-                if abs(eval) >= 50000:  # Likely a checkmate score
-                    checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
-                    if eval > 0:  # White is winning
-                        # Calculate distance to mate from the principal variation length
-                        # The line contains the moves to mate, so distance = len(line)
-                        distance_to_mate = len(line)
-                        # Apply correction: prefer shorter mates
-                        eval = checkmate_bonus - distance_to_mate
-                    else:  # Black is winning
-                        # Calculate distance to mate from the principal variation length
-                        distance_to_mate = len(line)
-                        # Apply correction: prefer shorter mates
-                        eval = -(checkmate_bonus - distance_to_mate)
+                # TEMPORARILY DISABLED: Checkmate distance correction causing absurd evaluations
+                # TODO: Re-implement with proper checkmate detection
+                # checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                # if abs(abs(eval) - checkmate_bonus) <= 1000:
+                #     if eval > 0:  # White is winning
+                #         distance_to_mate = len(line)
+                #         eval = checkmate_bonus - distance_to_mate
+                #     else:  # Black is winning
+                #         distance_to_mate = len(line)
+                #         eval = -(checkmate_bonus - distance_to_mate)
                 
-                # Apply repetition penalty/bonus based on current position
-                if hasattr(self, 'repetition_detected') and self.repetition_detected:
+                # Check if this move leads to a 3-fold repetition
+                board.push(move)
+                repetition_after_move = board.is_repetition()
+                board.pop()
+                
+                # Apply repetition penalty/bonus based on whether this move leads to repetition
+                if repetition_after_move:
                     repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                    # If we're winning and this move leads to repetition, penalize it
+                    # If we're winning and this move leads to repetition, heavily penalize it
                     # If we're losing and this move leads to repetition, prefer it
-                    if eval > 100:  # White is winning
-                        eval = repetition_eval  # Prefer draw over winning
-                    elif eval < -100:  # White is losing
+                    if eval > 50:  # White is winning significantly
+                        eval = -1000  # Heavy penalty for throwing away winning position
+                    elif eval < -50:  # White is losing significantly
                         eval = repetition_eval  # Prefer draw over losing
+                
+
                 
                 # Update best move if this is better
                 if eval > max_eval:
                     max_eval = eval
                     best_line = [move] + line
                     best_move = move
-                    # Only print when we find a new best move that's at least 1 point better! 🎯
+                    # Log new best moves during search (use logger, not print to avoid lichess interface issues)
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
                         if eval > max_eval + 1 or max_eval == -float('inf'):
                             variation_str = " -> ".join(variation + [move_san]) if variation else move_san
-                            print(f"  🌟 New best! {move_san}: {round(eval, 2)} | Variation: {variation_str}")
+                            self.logger.log_new_best_move(f"{move_san}: {round(eval, 2)} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 alpha = max(alpha, eval)
@@ -929,6 +1123,8 @@ class MinimaxEngine(Engine):
                 
                 self._store_transposition(board, depth, max_eval, best_move, node_type)
                     
+
+            
             # Exit node for visualization
             best_line_san = []
             if best_line:
@@ -956,36 +1152,53 @@ class MinimaxEngine(Engine):
                 # Get SAN notation before making the move
                 move_san = board.san(move)
                 
+                # Check time budget before processing this move
+                if (start_time and time_budget and self.time_budget_early_exit_enabled):
+                    elapsed_time = time.time() - start_time
+                    
+                    if elapsed_time >= time_budget - self.time_budget_safety_margin:
+                        # Return best move found so far
+                        if best_move:
+                            return min_eval, best_line
+                        else:
+                            raise EarlyExitException(None, None, None, "timeout_before_move")
+                
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san])
+                try:
+                    eval, line = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget)
+                except EarlyExitException as e:
+                    # Propagate early exit up the tree
+                    board.pop()
+                    raise e
                 # Undo move
                 board.pop()
                 
-                # Apply checkmate distance correction for winning positions
-                if abs(eval) >= 50000:  # Likely a checkmate score
-                    checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
-                    if eval > 0:  # White is winning
-                        # Calculate distance to mate from the principal variation length
-                        # The line contains the moves to mate, so distance = len(line)
-                        distance_to_mate = len(line)
-                        # Apply correction: prefer shorter mates
-                        eval = checkmate_bonus - distance_to_mate
-                    else:  # Black is winning
-                        # Calculate distance to mate from the principal variation length
-                        distance_to_mate = len(line)
-                        # Apply correction: prefer shorter mates
-                        eval = -(checkmate_bonus - distance_to_mate)
+                # TEMPORARILY DISABLED: Checkmate distance correction causing absurd evaluations
+                # TODO: Re-implement with proper checkmate detection
+                # checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                # if abs(abs(eval) - checkmate_bonus) <= 1000:
+                #     if eval > 0:  # White is winning
+                #         distance_to_mate = len(line)
+                #         eval = checkmate_bonus - distance_to_mate
+                #     else:  # Black is winning
+                #         distance_to_mate = len(line)
+                #         eval = -(checkmate_bonus - distance_to_mate)
                 
-                # Apply repetition penalty/bonus based on current position
-                if hasattr(self, 'repetition_detected') and self.repetition_detected:
+                # Check if this move leads to a 3-fold repetition
+                board.push(move)
+                repetition_after_move = board.is_repetition()
+                board.pop()
+                
+                # Apply repetition penalty/bonus based on whether this move leads to repetition
+                if repetition_after_move:
                     repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                    # If we're winning and this move leads to repetition, penalize it
+                    # If we're winning and this move leads to repetition, heavily penalize it
                     # If we're losing and this move leads to repetition, prefer it
-                    if eval < -100:  # Black is winning
-                        eval = repetition_eval  # Prefer draw over winning
-                    elif eval > 100:  # Black is losing
+                    if eval < -50:  # Black is winning significantly
+                        eval = 1000  # Heavy penalty for throwing away winning position
+                    elif eval > 50:  # Black is losing significantly
                         eval = repetition_eval  # Prefer draw over losing
                 
                 # Update best move if this is better
@@ -993,12 +1206,12 @@ class MinimaxEngine(Engine):
                     min_eval = eval
                     best_line = [move] + line
                     best_move = move
-                    # Only print when we find a new best move that's at least 1 point better! 🎯
+                    # Log new best moves during search (use logger, not print to avoid lichess interface issues)
                     if depth == self.depth - 1:  # Only at top level
                         # Check if this is significantly better (at least 1 point improvement)
                         if eval < min_eval - 1 or min_eval == float('inf'):
                             variation_str = " -> ".join(variation + [move_san]) if variation else move_san
-                            print(f"  🌟 New best! {move_san}: {round(eval, 2)} | Variation: {variation_str}")
+                            self.logger.log_new_best_move(f"{move_san}: {round(eval, 2)} | Variation: {variation_str}")
                 
                 # Alpha-beta pruning
                 beta = min(beta, eval)
@@ -1662,4 +1875,6 @@ class MinimaxEngine(Engine):
         gives_check = board.is_check()
         board.pop()
         return gives_check
+    
+
 
