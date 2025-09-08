@@ -148,6 +148,10 @@ class MinimaxEngine(Engine):
         
         # Move counter for visualization
         self.move_counter = 0
+        
+        # Initialize search result attributes
+        self.best_value = None
+        self.best_line = []
     
     def calculate_time_budget(self, time_remaining, increment):
         """
@@ -803,8 +807,11 @@ class MinimaxEngine(Engine):
                         line = e.best_line
                         self.logger.log_info(f"Early exit during search: {e.reason}")
                     else:
-                        # No best move found, use fallback evaluation
-                        value = 0
+                        # No best move found, use fallback evaluation that won't be selected
+                        if original_turn:  # White to move: use very negative value so it won't be selected
+                            value = -float('inf')
+                        else:  # Black to move: use very positive value so it won't be selected
+                            value = float('inf')
                         line = []
                         self.logger.log_warning(f"Early exit with no best move: {e.reason}")
                 
