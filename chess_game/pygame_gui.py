@@ -164,6 +164,10 @@ class PygameChessGUI:
                     
                     chess_board.push(move)
                     self.draw_board()
+                    
+                    # Print FEN after computer move (only for pygame GUI)
+                    print(f"🤖 FEN: {chess_board.fen()}")
+                    
                     if chess_board.is_game_over():
                         self.show_game_over()
                         
@@ -245,6 +249,9 @@ class PygameChessGUI:
                 self.selected_square = None
                 self.draw_board()
                 
+                # Print FEN after human move (only for pygame GUI)
+                print(f"📋 FEN: {self.board.get_board().fen()}")
+                
                 # Check for game over
                 if self.board.get_board().is_game_over():
                     self.show_game_over()
@@ -277,6 +284,9 @@ class PygameChessGUI:
             self.setup_checkmate_defense_mode()
         
         self.draw_board()
+        
+        # Print initial FEN (only for pygame GUI)
+        print(f"🎯 Initial FEN: {self.board.get_board().fen()}")
         
         # If computer plays white, make first move
         if self.game_mode == "computer_vs_human":

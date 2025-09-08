@@ -56,10 +56,10 @@
     "moveorder_shallow_search_depth": 2,
     "moveorder_shallow_search_quiescence_depth_limit": 2,
     "cache_size_limit": 100000,
-    "kingside_castling_bonus": 35,
-    "queenside_castling_bonus": 30,
-    "kingside_castling_right_penalty": -10,
-    "queenside_castling_right_penalty": -8,
+    "kingside_castling_bonus": 45,
+    "queenside_castling_bonus": 40,
+    "kingside_castling_right_penalty": -15,
+    "queenside_castling_right_penalty": -10,
     "pawn_shield_weight": 10,
     "king_safety_weight": 1.0,
     "evaluation_cache_enabled": false,
@@ -68,5 +68,6 @@
     "material_cache_size": 50000,
     "search_visualization_enabled": false,
     "search_visualization_target_fen": null,
+    "transposition_table_enabled": false,
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
 }

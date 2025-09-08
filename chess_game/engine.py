@@ -109,10 +109,17 @@ class MinimaxEngine(Engine):
         
         # TT configuration
         self.tt_size_limit = 1000000  # Maximum number of entries
-        self.tt_enabled = True
+        self.tt_enabled = self.evaluation_manager.evaluator.config.get("transposition_table_enabled", True)
         
-        # Initialize Zobrist hash for transposition table
-        self._init_zobrist_hash()
+        # Initialize Zobrist hash for transposition table only if TT is enabled
+        if self.tt_enabled:
+            self._init_zobrist_hash()
+        else:
+            # Set empty hash tables to avoid errors
+            self.zobrist_pieces = {}
+            self.zobrist_castling = {}
+            self.zobrist_en_passant = {}
+            self.zobrist_side = 0
         
         # Load time management parameters
         self.time_management_moves_remaining = self.evaluation_manager.evaluator.config.get("time_management_moves_remaining", 30)
@@ -126,6 +133,12 @@ class MinimaxEngine(Engine):
         self.time_budget_check_frequency = self.evaluation_manager.evaluator.config.get("time_budget_check_frequency", 1000)
         self.time_budget_early_exit_enabled = self.evaluation_manager.evaluator.config.get("time_budget_early_exit_enabled", True)
         self.time_budget_safety_margin = self.evaluation_manager.evaluator.config.get("time_budget_safety_margin", 0.1)
+        
+        # Load quiescence parameters
+        self.quiescence_include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
+        self.quiescence_include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
+        self.quiescence_include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
+        self.quiescence_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_value_threshold", 500)
         
         # Initialize search visualizer
         self.visualizer = get_visualizer()
@@ -458,6 +471,9 @@ class MinimaxEngine(Engine):
     
     def _get_zobrist_hash(self, board):
         """Generate Zobrist hash for the current board position"""
+        if not self.tt_enabled:
+            return 0  # Return dummy hash when TT is disabled
+        
         hash_key = 0
         
         # Hash pieces
@@ -617,6 +633,20 @@ class MinimaxEngine(Engine):
         # Set the starting position for consistent evaluation throughout search
         if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
             self.evaluation_manager.evaluator._set_starting_position(board)
+            if not self.quiet:
+                self.logger.log_info(f"Set starting position: {chess.popcount(board.occupied)} pieces")
+        else:
+            # Fallback: try to set starting position directly if the evaluator has the attribute
+            if hasattr(self.evaluation_manager.evaluator, 'starting_piece_count'):
+                self.evaluation_manager.evaluator.starting_piece_count = chess.popcount(board.occupied)
+                if not self.quiet:
+                    self.logger.log_info(f"Set starting position (fallback): {chess.popcount(board.occupied)} pieces")
+            else:
+                if not self.quiet:
+                    self.logger.log_warning("Could not set starting position - evaluator missing required attributes")
+                    self.logger.log_warning(f"Evaluator type: {type(self.evaluation_manager.evaluator).__name__}")
+                    self.logger.log_warning(f"Evaluator has _set_starting_position: {hasattr(self.evaluation_manager.evaluator, '_set_starting_position')}")
+                    self.logger.log_warning(f"Evaluator has starting_piece_count: {hasattr(self.evaluation_manager.evaluator, 'starting_piece_count')}")
         
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board):
@@ -1067,16 +1097,15 @@ class MinimaxEngine(Engine):
                 # Undo move
                 board.pop()
                 
-                # TEMPORARILY DISABLED: Checkmate distance correction causing absurd evaluations
-                # TODO: Re-implement with proper checkmate detection
-                # checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
-                # if abs(abs(eval) - checkmate_bonus) <= 1000:
-                #     if eval > 0:  # White is winning
-                #         distance_to_mate = len(line)
-                #         eval = checkmate_bonus - distance_to_mate
-                #     else:  # Black is winning
-                #         distance_to_mate = len(line)
-                #         eval = -(checkmate_bonus - distance_to_mate)
+                # Checkmate distance correction
+                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                if abs(abs(eval) - checkmate_bonus) <= 1000:
+                    if eval > 0:  # White is winning
+                        distance_to_mate = len(line)
+                        eval = checkmate_bonus - distance_to_mate
+                    else:  # Black is winning
+                        distance_to_mate = len(line)
+                        eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Check if this move leads to a 3-fold repetition
                 board.push(move)
@@ -1175,16 +1204,15 @@ class MinimaxEngine(Engine):
                 # Undo move
                 board.pop()
                 
-                # TEMPORARILY DISABLED: Checkmate distance correction causing absurd evaluations
-                # TODO: Re-implement with proper checkmate detection
-                # checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
-                # if abs(abs(eval) - checkmate_bonus) <= 1000:
-                #     if eval > 0:  # White is winning
-                #         distance_to_mate = len(line)
-                #         eval = checkmate_bonus - distance_to_mate
-                #     else:  # Black is winning
-                #         distance_to_mate = len(line)
-                #         eval = -(checkmate_bonus - distance_to_mate)
+                # Checkmate distance correction
+                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                if abs(abs(eval) - checkmate_bonus) <= 1000:
+                    if eval > 0:  # White is winning
+                        distance_to_mate = len(line)
+                        eval = checkmate_bonus - distance_to_mate
+                    else:  # Black is winning
+                        distance_to_mate = len(line)
+                        eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Check if this move leads to a 3-fold repetition
                 board.push(move)
@@ -1307,13 +1335,6 @@ class MinimaxEngine(Engine):
         """Switch to a different evaluator"""
         self.evaluation_manager.switch_evaluator(evaluator_type, **kwargs)
     
-    def get_evaluation_history(self):
-        """Get evaluation history for analysis"""
-        return self.evaluation_manager.get_evaluation_history()
-    
-    def clear_evaluation_history(self):
-        """Clear evaluation history"""
-        self.evaluation_manager.clear_history()
     
     def get_cache_stats(self):
         """Get evaluation cache statistics"""
@@ -1553,12 +1574,10 @@ class MinimaxEngine(Engine):
                 captures.append(move)
             else:
                 # Check if move gives check (but not checkmate - that's handled by search)
-                board.push(move)
-                if board.is_check():
+                if board.is_into_check(move):
                     checks.append(move)
                 else:
                     non_captures.append(move)
-                board.pop()
         
         # Pre-calculate capture values for better sorting
         if captures:
@@ -1765,72 +1784,42 @@ class MinimaxEngine(Engine):
         Returns:
             List of moves to search in quiescence
         """
-        moves_to_search = []
+        # Generate legal moves once
+        legal_moves = list(board.legal_moves)
         
-        # Always include captures
-        captures = [move for move in board.legal_moves if board.is_capture(move)]
-        moves_to_search.extend(captures)
+        # Categorize moves in a single pass
+        captures = []
+        checks = []
+        defensive_moves = []
         
-        # Include checks if configured
-        include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
-        if include_checks:
-            checks = []
-            for move in board.legal_moves:
-                if not board.is_capture(move):
-                    board.push(move)
-                    if board.is_check():
+        for move in legal_moves:
+            is_capture = board.is_capture(move)
+            
+            if is_capture:
+                # Always include captures
+                captures.append(move)
+            else:
+                # Check if this non-capture move gives check (only if checks are enabled)
+                if self.quiescence_include_checks:
+                    if board.is_into_check(move):
                         checks.append(move)
-                    board.pop()
-            moves_to_search.extend(checks)
+                
+                # Check if this is a defensive move (only if defensive moves are enabled)
+                if self.quiescence_include_queen_defense or self.quiescence_include_value_threshold:
+                    if self._is_defensive_move_fast(board, move):
+                        defensive_moves.append(move)
         
-        # Include defensive moves based on configuration
-        include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
-        include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
-        
-        if include_queen_defense or include_value_threshold:
-            defensive_moves = self._get_defensive_moves(board, include_queen_defense, include_value_threshold)
-            moves_to_search.extend(defensive_moves)
-        
+        # Combine all moves
+        moves_to_search = captures + checks + defensive_moves
         return moves_to_search
     
-    def _get_defensive_moves(self, board, include_queen_defense, include_value_threshold):
+    def _is_defensive_move_fast(self, board, move):
         """
-        Get defensive moves based on configuration options.
-        
-        Args:
-            board: Current board state
-            include_queen_defense: Whether to include queen defensive moves
-            include_value_threshold: Whether to include value threshold defensive moves
-            
-        Returns:
-            List of defensive moves
-        """
-        defensive_moves = []
-        piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
-        value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_value_threshold", 500)
-        
-        for move in board.legal_moves:
-            # Skip moves already included (captures and checks)
-            if board.is_capture(move) or self._gives_check(board, move):
-                continue
-            
-            # Check if this move is defensive based on configuration
-            if self._is_defensive_move(board, move, include_queen_defense, include_value_threshold, piece_values, value_threshold):
-                defensive_moves.append(move)
-        
-        return defensive_moves
-    
-    def _is_defensive_move(self, board, move, include_queen_defense, include_value_threshold, piece_values, value_threshold):
-        """
-        Check if a move is defensive based on configuration options.
+        Fast defensive move check using cached configuration values.
         
         Args:
             board: Current board state
             move: The move to check
-            include_queen_defense: Whether to include queen defensive moves
-            include_value_threshold: Whether to include value threshold defensive moves
-            piece_values: Dictionary of piece values
-            value_threshold: Value threshold for defensive moves
             
         Returns:
             True if the move is defensive, False otherwise
@@ -1847,34 +1836,16 @@ class MinimaxEngine(Engine):
             return False
         
         # Queen defense: only consider queen defensive moves
-        if include_queen_defense and piece.piece_type == chess.QUEEN:
+        if self.quiescence_include_queen_defense and piece.piece_type == chess.QUEEN:
             return True
         
         # Value threshold: consider moves for pieces above value threshold
-        if include_value_threshold:
+        if self.quiescence_include_value_threshold:
+            piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
             piece_symbol = piece.symbol().upper()
             if piece_symbol in piece_values:
                 piece_value = piece_values[piece_symbol]
-                if piece_value >= value_threshold:
+                if piece_value >= self.quiescence_value_threshold:
                     return True
         
         return False
-    
-    def _gives_check(self, board, move):
-        """
-        Check if a move gives check.
-        
-        Args:
-            board: Current board state
-            move: The move to check
-            
-        Returns:
-            True if the move gives check, False otherwise
-        """
-        board.push(move)
-        gives_check = board.is_check()
-        board.pop()
-        return gives_check
-    
-
-

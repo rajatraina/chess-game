@@ -410,7 +410,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             checkmate_score = self._evaluate_checkmate(board)
             return {
                 'material': 0.0,
-                'position': 0.0,
+                'positional': 0.0,
                 'mobility': 0.0,
                 'total': round(checkmate_score, 2)
             }
@@ -418,7 +418,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.is_stalemate() or board.is_insufficient_material():
             return {
                 'material': 0.0,
-                'position': 0.0,
+                'positional': 0.0,
                 'mobility': 0.0,
                 'total': round(self.config["draw_value"], 2)
             }
@@ -426,7 +426,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.is_repetition(3):
             return {
                 'material': 0.0,
-                'position': 0.0,
+                'positional': 0.0,
                 'mobility': 0.0,
                 'total': round(self.config["draw_value"], 2)
             }
@@ -434,7 +434,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.halfmove_clock >= 100:  # Fifty-move rule
             return {
                 'material': 0.0,
-                'position': 0.0,
+                'positional': 0.0,
                 'mobility': 0.0,
                 'total': round(self.config["draw_value"], 2)
             }
@@ -472,6 +472,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             # Apply standard weights using cached values for performance
             weighted_material = self.cached_material_weight * material_score
             weighted_position = self.cached_positional_weight * positional_score
+            # print("Cached positional weight: ", self.cached_positional_weight, " Positional score: ", positional_score)
             weighted_mobility = self.cached_mobility_weight * mobility_score
             
             # Add king safety evaluation for middlegame
@@ -481,11 +482,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety
         
         return {
-            'material': round(weighted_material, 2),
-            'position': round(weighted_position, 2),
-            'mobility': round(weighted_mobility, 2),
-            'king_safety': round(weighted_king_safety, 2),
-            'total': round(total_score, 2)
+            'material': round(weighted_material, 3),
+            'positional': round(weighted_position, 3),
+            'mobility': round(weighted_mobility, 3),
+            'king_safety': round(weighted_king_safety, 3),
+            'total': round(total_score, 3)
         }
     
     def _evaluate_material(self, board: chess.Board) -> float:
@@ -1142,7 +1143,6 @@ class EvaluationManager:
             **kwargs: Additional arguments for the evaluator
         """
         self.evaluator = self._create_evaluator(evaluator_type, **kwargs)
-        self.evaluation_history = []
     
     def _create_evaluator(self, evaluator_type: str, **kwargs) -> BaseEvaluator:
         """Create the specified evaluator"""
@@ -1165,14 +1165,6 @@ class EvaluationManager:
             Evaluation score from White's perspective
         """
         score = self.evaluator.evaluate(board)
-        
-        # Store evaluation history for analysis
-        self.evaluation_history.append({
-            'fen': board.fen(),
-            'score': score,
-            'evaluator': self.evaluator.get_name()
-        })
-        
         return score
     
     def evaluate_with_components(self, board: chess.Board) -> dict:
@@ -1192,18 +1184,10 @@ class EvaluationManager:
             score = self.evaluator.evaluate(board)
             components = {
                 'material': 0.0,
-                'position': 0.0,
+                'positional': 0.0,
                 'mobility': 0.0,
                 'total': round(score, 2)
             }
-        
-        # Store evaluation history for analysis
-        self.evaluation_history.append({
-            'fen': board.fen(),
-            'score': components['total'],
-            'evaluator': self.evaluator.get_name(),
-            'components': components
-        })
         
         return components
     
@@ -1219,13 +1203,6 @@ class EvaluationManager:
         self.evaluator = self._create_evaluator(evaluator_type, **kwargs)
         print(f"🔄 Switched to {self.evaluator.get_name()}")
     
-    def get_evaluation_history(self) -> List[Dict]:
-        """Get evaluation history for analysis"""
-        return self.evaluation_history.copy()
-    
-    def clear_history(self):
-        """Clear evaluation history"""
-        self.evaluation_history.clear()
 
 
 # Factory function for easy evaluator creation

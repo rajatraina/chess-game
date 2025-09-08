@@ -36,6 +36,12 @@ class TestMustFindMoves(unittest.TestCase):
                 "Kb2",
                 "Lone king, should move to corner (tablebase choice)"
             ),
+            (
+                "Q7/2p3k1/1q6/5pb1/8/8/3r1PP1/2K5 b - - 9 45",
+                "black",
+                "Qb2#",
+                "Black to move, should find mate in 1 Qb2# over repetition Qc5+"
+            ),
             # Add more test cases here as needed:
             # (
             #     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
