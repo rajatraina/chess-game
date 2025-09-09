@@ -9,28 +9,39 @@ The lichess interface expects clean UCI communication and any unexpected output 
 """
 
 import time
+import logging
 from datetime import datetime
 
 class ChessLoggingManager:
     """Unified logging manager for chess engine operations"""
     
-    def __init__(self, log_callback=None, quiet=False):
+    def __init__(self, log_callback=None, quiet=False, use_python_logging=False):
         """
         Initialize logging manager.
         
         Args:
             log_callback: Function to call for logging (default: print)
             quiet: If True, suppress all logging
+            use_python_logging: If True, use Python logging instead of callback
         """
         self.log_callback = log_callback or print
         self.quiet = quiet
         self.search_start_time = None
         self.move_order_logged = False
+        self.use_python_logging = use_python_logging
+        
+        if self.use_python_logging:
+            self.logger = logging.getLogger(__name__)
     
     def log(self, message):
         """Log a message if not quiet"""
-        if not self.quiet and self.log_callback:
-            self.log_callback(message)
+        if not self.quiet:
+            if self.use_python_logging:
+                # Use Python logging for lichess bot context
+                self.logger.info(message)
+            elif self.log_callback:
+                # Use callback for other contexts (like pygame)
+                self.log_callback(message)
     
     def log_search_start(self, board, search_depth):
         """Log the start of a search"""
@@ -204,11 +215,11 @@ class ChessLoggingManager:
 # Global logging manager instance
 _global_logger = None
 
-def get_logger(log_callback=None, quiet=False):
+def get_logger(log_callback=None, quiet=False, use_python_logging=False):
     """Get the global logging manager instance"""
     global _global_logger
     if _global_logger is None:
-        _global_logger = ChessLoggingManager(log_callback, quiet)
+        _global_logger = ChessLoggingManager(log_callback, quiet, use_python_logging)
     return _global_logger
 
 def set_logger(logger):

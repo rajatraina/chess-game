@@ -8,10 +8,12 @@ try:
     from .evaluation import EvaluationManager, create_evaluator
     from .logging_manager import get_logger
     from .search_visualizer import get_visualizer, configure_visualizer
+    from .opening_book import OpeningBook, OpeningBookError
 except ImportError:
     from evaluation import EvaluationManager, create_evaluator
     from logging_manager import get_logger
     from search_visualizer import get_visualizer, configure_visualizer
+    from opening_book import OpeningBook, OpeningBookError
 
 # IMPORTANT: All logging must use self.logger methods, never print() statements.
 # This ensures clean UCI protocol communication with lichess interface.
@@ -70,14 +72,14 @@ class MinimaxEngine(Engine):
     - Black's turn: minimize evaluation (find best move for Black)
     """
     
-    def __init__(self, depth=None, evaluator_type="handcrafted", evaluator_config=None, quiet=False, new_best_move_callback=None):
+    def __init__(self, depth=None, evaluator_type="handcrafted", evaluator_config=None, quiet=False, new_best_move_callback=None, use_python_logging=False):
         self.nodes_searched = 0
         self.search_start_time = 0
         self.quiet = quiet  # Control debug output
         self.new_best_move_callback = new_best_move_callback
         
         # Initialize logging manager
-        self.logger = get_logger(new_best_move_callback, quiet)
+        self.logger = get_logger(new_best_move_callback, quiet, use_python_logging)
         
         # Initialize evaluation system with config file by default
         if evaluator_config is None:
@@ -145,6 +147,10 @@ class MinimaxEngine(Engine):
         viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
         viz_target_fen = self.evaluation_manager.evaluator.config.get("search_visualization_target_fen", None)
         configure_visualizer(viz_enabled, viz_target_fen)
+        
+        # Initialize opening book
+        self.opening_book = None
+        self.init_opening_book()
         
         # Move counter for visualization
         self.move_counter = 0
@@ -613,6 +619,35 @@ class MinimaxEngine(Engine):
             if not self.quiet:
                 self.logger.log_warning(f"Could not initialize tablebase: {e}")
             self.tablebase = None
+    
+    def init_opening_book(self):
+        """Initialize opening book if enabled and available"""
+        try:
+            opening_book_config = self.evaluation_manager.evaluator.config.get("opening_book", {})
+            
+            if not opening_book_config.get("enabled", False):
+                if not self.quiet:
+                    self.logger.log_info("Opening book disabled in configuration")
+                return
+            
+            book_file_path = opening_book_config.get("file_path", "opening_book.txt")
+            
+            # Try to load the opening book with time-based random seed
+            time_seed = int(time.time() * 1000000)  # Use microseconds for better uniqueness
+            self.opening_book = OpeningBook(book_file_path, random_seed=time_seed)
+            
+            if not self.quiet:
+                stats = self.opening_book.get_book_stats()
+                self.logger.log_info(f"Opening book loaded: {stats['total_positions']} positions, {stats['total_moves']} moves")
+            
+        except OpeningBookError as e:
+            if not self.quiet:
+                self.logger.log_error(f"Opening book error: {e}")
+            self.opening_book = None
+        except Exception as e:
+            if not self.quiet:
+                self.logger.log_warning(f"Could not initialize opening book: {e}")
+            self.opening_book = None
 
     def get_move(self, board, time_budget=None, repetition_detected=False):
         """
@@ -665,6 +700,19 @@ class MinimaxEngine(Engine):
             else:
                 if not self.quiet:
                     self.logger.log_warning("Tablebase lookup failed, using standard search")
+        
+        # Check if position is in opening book
+        if self.opening_book and self.opening_book.is_in_book(board):
+            available_moves = self.opening_book.get_available_moves(board)
+            opening_move = self.opening_book.get_move(board)
+            if opening_move:
+                # Format: ℹ️  Opening Book hit. Found moves: e6 [30] d4 [70]. Playing move: e6
+                moves_str = " ".join([f"{move} [{weight}]" for move, weight in available_moves])
+                message = f"ℹ️  Opening Book hit. Found moves: {moves_str}. Playing move: {board.san(opening_move)}"
+                self.logger.log_info(message)
+                return opening_move
+            else:
+                self.logger.log_warning("Opening book lookup failed, using standard search")
         
         # Start timing the search and reset node counter
         start_time = time.time()
