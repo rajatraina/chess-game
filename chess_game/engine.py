@@ -205,10 +205,10 @@ class MinimaxEngine(Engine):
                     return checkmate_bonus, [], SearchStatus.COMPLETE
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
                 draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
-                return draw_value, [], SearchStatus.COMPLETE, SearchStatus.COMPLETE  # Draw
+                return draw_value, [], SearchStatus.COMPLETE  # Draw
             elif board.is_repetition():
                 repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                return repetition_eval, [], SearchStatus.COMPLETE, SearchStatus.COMPLETE  # 3-fold repetition
+                return repetition_eval, [], SearchStatus.COMPLETE  # 3-fold repetition
         
         # Leaf node: use quiescence search
         if depth == 0:
@@ -261,6 +261,29 @@ class MinimaxEngine(Engine):
             
             # Undo the move
             board.pop()
+            
+            # Apply repetition penalty/bonus logic (same as in _minimax)
+            # Check if this move leads to a 3-fold repetition
+            board.push(move)
+            repetition_after_move = board.is_repetition()
+            board.pop()
+            
+            if repetition_after_move:
+                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                # Check current position evaluation to determine if we're winning/losing
+                current_eval = self.evaluate_cached(board)
+                # If we're winning and this move leads to repetition, heavily penalize it
+                # If we're losing and this move leads to repetition, prefer it
+                if board.turn:  # White to move
+                    if current_eval > 50:  # White is winning significantly
+                        value = -1000  # Heavy penalty for throwing away winning position
+                    elif current_eval < -50:  # White is losing significantly
+                        value = repetition_eval  # Prefer draw over losing
+                else:  # Black to move
+                    if current_eval < -50:  # Black is winning significantly
+                        value = 1000  # Heavy penalty for throwing away winning position
+                    elif current_eval > 50:  # Black is losing significantly
+                        value = repetition_eval  # Prefer draw over losing
             
             # Update best move based on whose turn it is
             if board.turn:  # White to move: maximize
@@ -671,7 +694,7 @@ class MinimaxEngine(Engine):
                 self.logger.log_warning(f"Could not initialize opening book: {e}")
             self.opening_book = None
 
-    def get_move(self, board, time_budget=None, repetition_detected=False):
+    def get_move(self, board, time_budget=None, repetition_detected=False, disable_opening_book=False):
         """
         Find the best move for the current side to move.
         
@@ -724,7 +747,7 @@ class MinimaxEngine(Engine):
                     self.logger.log_warning("Tablebase lookup failed, using standard search")
         
         # Check if position is in opening book
-        if self.opening_book and self.opening_book.is_in_book(board):
+        if self.opening_book and not disable_opening_book and self.opening_book.is_in_book(board):
             available_moves_detailed = self.opening_book.get_available_moves_detailed(board)
             opening_move = self.opening_book.get_move(board)
             if opening_move:

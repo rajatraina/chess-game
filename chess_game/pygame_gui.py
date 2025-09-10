@@ -83,6 +83,43 @@ class PygameChessGUI:
         print("♔ Checkmate Defense Mode: Human (White King + Pawn) vs Computer (Black King + 2 Knights)")
         print("🎯 Goal: Try to avoid checkmate for as long as possible!")
     
+    def setup_pawn_advancement_test_mode(self):
+        """Set up the board for pawn advancement test: Human (White) vs Computer (Black) with specific FEN"""
+        # Clear the board
+        self.board.reset()
+        chess_board = self.board.get_board()
+        
+        # Remove all pieces
+        for square in chess.SQUARES:
+            if chess_board.piece_at(square):
+                chess_board.remove_piece_at(square)
+        
+        # Set up the specific FEN: "8/5p1p/1p5p/1P3n2/5k2/2K5/6r1/1B6 b - - 13 51"
+        # This is Black to move with pawns that should advance
+        
+        # Place White pieces
+        chess_board.set_piece_at(chess.B5, chess.Piece(chess.PAWN, chess.WHITE))    # White pawn on b5
+        chess_board.set_piece_at(chess.C3, chess.Piece(chess.KING, chess.WHITE))    # White king on c3
+        chess_board.set_piece_at(chess.B1, chess.Piece(chess.BISHOP, chess.WHITE))  # White bishop on b1
+        
+        # Place Black pieces
+        chess_board.set_piece_at(chess.F7, chess.Piece(chess.PAWN, chess.BLACK))    # Black pawn on f7
+        chess_board.set_piece_at(chess.H7, chess.Piece(chess.PAWN, chess.BLACK))    # Black pawn on h7
+        chess_board.set_piece_at(chess.B6, chess.Piece(chess.PAWN, chess.BLACK))    # Black pawn on b6
+        chess_board.set_piece_at(chess.H6, chess.Piece(chess.PAWN, chess.BLACK))    # Black pawn on h6
+        chess_board.set_piece_at(chess.F5, chess.Piece(chess.KNIGHT, chess.BLACK))  # Black knight on f5
+        chess_board.set_piece_at(chess.F4, chess.Piece(chess.KING, chess.BLACK))    # Black king on f4
+        chess_board.set_piece_at(chess.G2, chess.Piece(chess.ROOK, chess.BLACK))    # Black rook on g2
+        
+        # Set the board to the correct state (Black to move, move counters, etc.)
+        chess_board.turn = chess.BLACK  # Black to move
+        chess_board.fullmove_number = 51
+        chess_board.halfmove_clock = 13
+        
+        print("♟️ Pawn Advancement Test Position: Human (White) vs Computer (Black)")
+        print("🎯 Goal: Test if the computer chooses pawn advancement moves (f6, h5) over other moves!")
+        print("📋 FEN: 8/5p1p/1p5p/1P3n2/5k2/2K5/6r1/1B6 b - - 13 51")
+    
     def draw_board(self):
         # Draw board squares
         colors = [(240, 217, 181), (181, 136, 99)]  # Light and dark squares
@@ -139,7 +176,7 @@ class PygameChessGUI:
         return None
     
     def make_computer_move(self):
-        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "computer_vs_computer"]:
+        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "computer_vs_computer", "pawn_advancement_test"]:
             chess_board = self.board.get_board()
             if not chess_board.is_game_over():
                 # Track nodes for computer vs computer mode
@@ -147,7 +184,9 @@ class PygameChessGUI:
                     nodes_before = self.engine.nodes_searched
                     print(f"🤖 Computer vs Computer: {'White' if chess_board.turn else 'Black'} to move")
                 
-                move = self.engine.get_move(chess_board, time_budget=self.time_budget)
+                # Disable opening book for pawn advancement test mode to avoid crashes
+                disable_opening_book = (self.game_mode == "pawn_advancement_test")
+                move = self.engine.get_move(chess_board, time_budget=self.time_budget, disable_opening_book=disable_opening_book)
                 
                 if move:
                     # Update statistics for computer vs computer mode
@@ -257,7 +296,7 @@ class PygameChessGUI:
                     self.show_game_over()
                 else:
                     # Make computer move if in computer mode
-                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense"]:
+                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "pawn_advancement_test"]:
                         pygame.time.wait(500)
                         self.make_computer_move()
             else:
@@ -282,6 +321,8 @@ class PygameChessGUI:
         # Set up special board for checkmate defense mode
         if self.game_mode == "checkmate_defense":
             self.setup_checkmate_defense_mode()
+        elif self.game_mode == "pawn_advancement_test":
+            self.setup_pawn_advancement_test_mode()
         
         self.draw_board()
         
@@ -294,6 +335,10 @@ class PygameChessGUI:
             self.make_computer_move()
         elif self.game_mode == "computer_vs_computer":
             # Start the computer vs computer game
+            pygame.time.wait(1000)
+            self.make_computer_move()
+        elif self.game_mode == "pawn_advancement_test":
+            # Computer plays Black and should make the first move
             pygame.time.wait(1000)
             self.make_computer_move()
     
@@ -311,6 +356,15 @@ class PygameChessGUI:
             print("• Try to avoid checkmate for as long as possible!")
             print("• Use your King and Pawn to escape and avoid the Knights' attacks")
             print("• The computer will try to checkmate you efficiently")
+        
+        # Print special instructions for pawn advancement test mode
+        elif mode == "pawn_advancement_test":
+            print("\n♟️ Pawn Advancement Test Mode Instructions:")
+            print("• You play as White")
+            print("• Computer plays as Black")
+            print("• Watch if the computer chooses pawn advancement moves (f6, h5)")
+            print("• This tests the fixed coordinate system for piece-square tables")
+            print("• The computer should prefer pawn moves over other moves in this position")
         
         # Print special instructions for computer vs computer mode
         elif mode == "computer_vs_computer":
@@ -353,6 +407,9 @@ class PygameChessGUI:
         elif command == '5':
             print("🤖 Switching to Computer vs Computer mode...")
             self.set_game_mode("computer_vs_computer")
+        elif command == '6':
+            print("🎯 Switching to Pawn Advancement Test Position...")
+            self.set_game_mode("pawn_advancement_test")
         elif command == 'EVAL':
             info = self.engine.get_evaluator_info()
             print(f"🧠 Current Evaluator: {info['name']}")
@@ -366,7 +423,7 @@ class PygameChessGUI:
             self.running = False
         else:
             print(f"❓ Unknown command: {command}")
-            print("Available commands: N, 1, 2, 3, 4, 5, EVAL, SWITCH_EVAL, ESC")
+            print("Available commands: N, 1, 2, 3, 4, 5, 6, EVAL, SWITCH_EVAL, ESC")
     
     def run(self):
         print("Starting Pygame Chess...")
@@ -378,6 +435,7 @@ class PygameChessGUI:
         print("  3: Computer vs Human")
         print("  4: Checkmate Defense Mode")
         print("  5: Computer vs Computer")
+        print("  6: Pawn Advancement Test Position")
         print("  E: Show current evaluator info")
         print("  ESC: Quit")
         print("\n💡 Tip: You can type commands in the terminal or use the Pygame window!")
@@ -406,6 +464,8 @@ class PygameChessGUI:
                         self.set_game_mode("checkmate_defense")
                     elif event.key == pygame.K_5:
                         self.set_game_mode("computer_vs_computer")
+                    elif event.key == pygame.K_6:
+                        self.set_game_mode("pawn_advancement_test")
                     elif event.key == pygame.K_e:
                         info = self.engine.get_evaluator_info()
                         print(f"🧠 Current Evaluator: {info['name']}")
