@@ -71,8 +71,10 @@
     "transposition_table_enabled": false,
     "opening_book": {
         "enabled": true,
-        "file_path": "opening_book_simple.txt",
+        "file_path": "opening_book.txt",
         "max_depth": 20,
+        "wdl_threshold": 0.05,
+        "min_games": 100,
         "random_selection": true,
         "weighted_selection": true
     },

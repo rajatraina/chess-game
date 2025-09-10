@@ -233,14 +233,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         """Initialize piece-square tables for positional evaluation"""
         # Pawn table - encourage center control and advancement
         self.pawn_table = [
-            0, 0, 0, 0, 0, 0, 0, 0,
-            8, 8, 8, 8, 8, 8, 8, 8,    # 7th rank - all good for advancement
-            6, 6, 6, 6, 6, 6, 6, 6,    # 6th rank - all good for advancement
-            0, 0, 0, 8, 8, 0, 0, 0,    # 5th rank - center control
-            2, 2, 4, 12, 12, 4, 2, 2,  # 4th rank - center control
+            0, 0, 0, 0, 0, 0, 0, 0,     # 1st rank
+            0, 0, 0, 0, 0, 0, 0, 0, # 2nd rank - starting position
             4, 4, 8, 15, 15, 8, 4, 4,  # 3rd rank - center control
-            25, 25, 25, 25, 25, 25, 25, 25, # 2nd rank - starting position
-            0, 0, 0, 0, 0, 0, 0, 0     # 1st rank
+            2, 2, 6, 12, 12, 6, 2, 2,  # 4th rank - center control
+            2, 2, 4, 12, 12, 4, 2, 2,    # 5th rank - center control
+            12, 12, 12, 12, 12, 12, 12, 12,    # 6th rank - all good for advancement
+            30, 30, 30, 30, 30, 30, 30, 30,    # 7th rank - all good for advancement
+            0, 0, 0, 0, 0, 0, 0, 0     # 8th rank
         ]
         
         # Knight table - encourage central squares
@@ -320,26 +320,26 @@ class HandcraftedEvaluator(BaseEvaluator):
         """Initialize endgame-specific piece-square tables"""
         # Endgame pawn table - strongly encourage advancement
         self.endgame_pawn_table = [
-            50, 50, 50, 50, 50, 50, 50, 50,      # 8th rank - promotion
-            40, 40, 40, 40, 40, 40, 40, 40, # 7th rank - very high value
-            30, 30, 30, 30, 30, 30, 30, 30, # 6th rank - high value
-            20, 20, 20, 20, 20, 20, 20, 20, # 5th rank - good value
-            10, 10, 10, 10, 10, 10, 10, 10,        # 4th rank - moderate value
-            0, 0, 0, 0, 0, 0, 0, 0,        # 3rd rank - neutral
-            -5, -5, -5, -5, -5, -5, -5, -5, # 2nd rank - discourage
-            -10, -10, -10, -10, -10, -10, -10, -10 # 1st rank - strongly discourage
+            -20, -20, -20, -20, -20, -20, -20, -20, # 1st rank - strongly discourage
+            0, 0, 0, 0, 0, 0, 0, 0, # 2nd rank - discourage
+            10, 10, 10, 10, 10, 10, 10, 10,        # 3rd rank - neutral
+            20, 20, 20, 20, 20, 20, 20, 20,        # 4th rank - moderate value
+            40, 40, 40, 40, 40, 40, 40, 40, # 5th rank - good value
+            60, 60, 60, 60, 60, 60, 60, 60, # 6th rank - high value
+            80, 80, 80, 80, 80, 80, 80, 80, # 7th rank - very high value
+            100, 100, 100, 100, 100, 100, 100, 100,      # 8th rank - promotion
         ]
         
         # Endgame king table - encourage centralization
         self.endgame_king_table = [
-            -10, -5, 0, 5, 5, 0, -5, -10,   # 8th rank - moderate
-            -5, 0, 5, 10, 10, 5, 0, -5,     # 7th rank - good
-            0, 5, 10, 15, 15, 10, 5, 0,      # 6th rank - very good
-            5, 10, 15, 15, 15, 15, 10, 5,    # 5th rank - excellent
-            5, 10, 15, 15, 15, 15, 10, 5,    # 4th rank - excellent
-            0, 5, 10, 15, 15, 10, 5, 0,      # 3rd rank - very good
+            -10, -5, 0, 5, 5, 0, -5, -10,   # 1st rank - moderate
             -5, 0, 5, 10, 10, 5, 0, -5,     # 2nd rank - good
-            -10, -5, 0, 5, 5, 0, -5, -10     # 1st rank - moderate
+            0, 5, 10, 15, 15, 10, 5, 0,      # 3rd rank - very good
+            5, 10, 15, 15, 15, 15, 10, 5,    # 4th rank - excellent
+            5, 10, 15, 15, 15, 15, 10, 5,    # 5th rank - excellent
+            0, 5, 10, 15, 15, 10, 5, 0,      # 6th rank - very good
+            -5, 0, 5, 10, 10, 5, 0, -5,     # 7th rank - good
+            -10, -5, 0, 5, 5, 0, -5, -10     # 8th rank - moderate
         ]
         
         # Combine endgame tables
