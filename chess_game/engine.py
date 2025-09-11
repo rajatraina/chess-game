@@ -904,7 +904,7 @@ class MinimaxEngine(Engine):
                 # Undo the move to restore the original board state
                 board.pop()
 
-                # Update global best move directly - first completed move is best due to ordering
+                # Update global best move - compare against existing best move
                 if first_completed_move is None:
                     # This is the first completed move at this depth - it's automatically the best
                     best_move = move
@@ -917,6 +917,25 @@ class MinimaxEngine(Engine):
                     # Log the new best move
                     self.logger.log_new_best_move(board.san(move), value)
                     self.logger.log_info(f"Updated best move from depth {current_depth}: {board.san(move)} ({value:.1f})")
+                else:
+                    # Compare this move against the existing best move
+                    is_better = False
+                    if original_turn:  # White to move: maximize (higher is better)
+                        is_better = value > best_value
+                    else:  # Black to move: minimize (lower is better)
+                        is_better = value < best_value
+                    
+                    if is_better:
+                        # This move is better - update best move
+                        best_move = move
+                        best_value = value
+                        best_line = [move] + line
+                        # Update instance variables for logging
+                        self.best_line = best_line
+                        self.best_value = best_value
+                        # Log the new best move
+                        self.logger.log_new_best_move(board.san(move), value)
+                        self.logger.log_info(f"Updated best move from depth {current_depth}: {board.san(move)} ({value:.1f})")
                 
                 # Update alpha-beta bounds
                 if original_turn:  # White to move: maximize

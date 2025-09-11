@@ -45,7 +45,7 @@ class OpeningBook:
     
     def __init__(self, book_file_path: Optional[str] = None, random_seed: Optional[int] = None):
         self.book_data: Dict[str, List[Tuple[str, int, int, int, float]]] = {}
-        self.wdl_threshold = 0.01  # Moves within 5% of best WDL are considered
+        self.wdl_threshold = 0.01  # Moves within 0.01 of best WDL are considered
         self.min_games = 100  # Minimum games required for a move to be considered
         
         # Set random seed based on current time if not provided

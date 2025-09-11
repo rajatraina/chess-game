@@ -16,12 +16,12 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
 # Configuration options
-MIN_ELO_RATING = 1800  # Minimum ELO rating for both players
+MIN_ELO_RATING = 1600  # Minimum ELO rating for both players
 MAX_MOVES_TO_TRACK = 12  # Maximum number of moves to track in opening book
-MIN_GAMES_FOR_POSITION = 100  # Minimum number of games required for a position to be included
+MIN_GAMES_FOR_POSITION = 5000  # Minimum number of games required for a position to be included
 MIN_TIME_CONTROL_SECONDS = 180  # Minimum base time in seconds (e.g., 180 = 3 minutes)
-MIN_MOVE_FREQUENCY_RATIO = 0.05  # Minimum frequency ratio for moves (e.g., 0.1 = 10% of most common move)
-MAX_WDL_SCORE_THRESHOLD = 0.03  # Maximum WDL score difference from best move (absolute threshold)
+MIN_MOVE_FREQUENCY_RATIO = 0.1  # Minimum frequency ratio for moves (e.g., 0.1 = 10% of most common move)
+MAX_WDL_SCORE_THRESHOLD = 0.05  # Maximum WDL score difference from best move (absolute threshold)
 OUTPUT_FILE = "lichess-opening-book.txt"
 CHECKPOINT_INTERVAL = 10000000  # Write checkpoint every N games (10M)
 VERBOSE_LOGGING = False  # Set to True to enable debug logging
