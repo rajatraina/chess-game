@@ -73,6 +73,10 @@ logger = logging.getLogger(__name__)
 with open("lib/versioning.yml") as version_file:
     versioning_info: VersioningType = yaml.safe_load(version_file)
 
+# Parse the deprecation_date string into a datetime.date object
+if isinstance(versioning_info["deprecation_date"], str):
+    versioning_info["deprecation_date"] = datetime.datetime.strptime(versioning_info["deprecation_date"], "%Y-%m-%d").date()
+
 __version__ = versioning_info["lichess_bot_version"]
 
 
