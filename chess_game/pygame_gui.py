@@ -83,6 +83,46 @@ class PygameChessGUI:
         print("♔ Checkmate Defense Mode: Human (White King + Pawn) vs Computer (Black King + 2 Knights)")
         print("🎯 Goal: Try to avoid checkmate for as long as possible!")
     
+    def setup_checkmate_as_white_mode(self):
+        """Set up the board for checkmate as white mode: Computer (White) has King + Rook vs Human (Black) with King"""
+        # Clear the board
+        self.board.reset()
+        chess_board = self.board.get_board()
+        
+        # Remove all pieces
+        for square in chess.SQUARES:
+            if chess_board.piece_at(square):
+                chess_board.remove_piece_at(square)
+        
+        # Generate random positions for White King and Rook
+        import random
+        
+        # Place White King at a random square (avoid edges for better gameplay)
+        white_king_squares = [chess.C3, chess.C4, chess.C5, chess.C6, 
+                             chess.D3, chess.D4, chess.D5, chess.D6,
+                             chess.E3, chess.E4, chess.E5, chess.E6,
+                             chess.F3, chess.F4, chess.F5, chess.F6]
+        white_king_square = random.choice(white_king_squares)
+        chess_board.set_piece_at(white_king_square, chess.Piece(chess.KING, chess.WHITE))
+        
+        # Place White Rook at a random square (avoid same square as king and edges)
+        white_rook_squares = [sq for sq in white_king_squares if sq != white_king_square]
+        white_rook_square = random.choice(white_rook_squares)
+        chess_board.set_piece_at(white_rook_square, chess.Piece(chess.ROOK, chess.WHITE))
+        
+        # Place Black King at a random square (avoid being too close to white pieces)
+        black_king_squares = [chess.A1, chess.A2, chess.A3, chess.A4, chess.A5, chess.A6, chess.A7, chess.A8,
+                             chess.B1, chess.B8, chess.C1, chess.C8, chess.D1, chess.D8,
+                             chess.E1, chess.E8, chess.F1, chess.F8, chess.G1, chess.G8,
+                             chess.H1, chess.H2, chess.H3, chess.H4, chess.H5, chess.H6, chess.H7, chess.H8]
+        black_king_square = random.choice(black_king_squares)
+        chess_board.set_piece_at(black_king_square, chess.Piece(chess.KING, chess.BLACK))
+        
+        print("♔ Checkmate as White Mode: Computer (White King + Rook) vs Human (Black King)")
+        print("🎯 Goal: Try to avoid checkmate for as long as possible!")
+        print(f"📍 White King at {chess.square_name(white_king_square)}, Rook at {chess.square_name(white_rook_square)}")
+        print(f"📍 Black King at {chess.square_name(black_king_square)}")
+    
     def setup_pawn_advancement_test_mode(self):
         """Set up the board for pawn advancement test: Human (White) vs Computer (Black) with specific FEN"""
         # Clear the board
@@ -176,7 +216,7 @@ class PygameChessGUI:
         return None
     
     def make_computer_move(self):
-        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "computer_vs_computer", "pawn_advancement_test"]:
+        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "checkmate_as_white", "computer_vs_computer", "pawn_advancement_test"]:
             chess_board = self.board.get_board()
             if not chess_board.is_game_over():
                 # Track nodes for computer vs computer mode
@@ -251,6 +291,14 @@ class PygameChessGUI:
             else:
                 print("🎉 Amazing! You survived the checkmate attempt!")
         
+        # Special message for checkmate as white mode
+        elif self.game_mode == "checkmate_as_white":
+            if result == "1-0":
+                print("💀 Checkmate! The computer checkmated you with King + Rook.")
+                print("🎯 Try again to see if you can survive longer!")
+            else:
+                print("🎉 Amazing! You survived the checkmate attempt!")
+        
         # Special message for computer vs computer mode
         if self.computer_vs_computer_mode:
             print("🤖 Computer vs Computer game completed!")
@@ -296,7 +344,7 @@ class PygameChessGUI:
                     self.show_game_over()
                 else:
                     # Make computer move if in computer mode
-                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "pawn_advancement_test"]:
+                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "checkmate_as_white", "pawn_advancement_test"]:
                         pygame.time.wait(500)
                         self.make_computer_move()
             else:
@@ -321,6 +369,8 @@ class PygameChessGUI:
         # Set up special board for checkmate defense mode
         if self.game_mode == "checkmate_defense":
             self.setup_checkmate_defense_mode()
+        elif self.game_mode == "checkmate_as_white":
+            self.setup_checkmate_as_white_mode()
         elif self.game_mode == "pawn_advancement_test":
             self.setup_pawn_advancement_test_mode()
         
@@ -331,6 +381,10 @@ class PygameChessGUI:
         
         # If computer plays white, make first move
         if self.game_mode == "computer_vs_human":
+            pygame.time.wait(1000)
+            self.make_computer_move()
+        elif self.game_mode == "checkmate_as_white":
+            # Computer plays White and should make the first move
             pygame.time.wait(1000)
             self.make_computer_move()
         elif self.game_mode == "computer_vs_computer":
@@ -356,6 +410,15 @@ class PygameChessGUI:
             print("• Try to avoid checkmate for as long as possible!")
             print("• Use your King and Pawn to escape and avoid the Knights' attacks")
             print("• The computer will try to checkmate you efficiently")
+        
+        # Print special instructions for checkmate as white mode
+        elif mode == "checkmate_as_white":
+            print("\n♔ Checkmate as White Mode Instructions:")
+            print("• Computer plays as White with King + Rook")
+            print("• You play as Black with King only")
+            print("• Try to avoid checkmate for as long as possible")
+            print("• The computer will try to checkmate you efficiently")
+            print("• Piece positions are randomized each game")
         
         # Print special instructions for pawn advancement test mode
         elif mode == "pawn_advancement_test":
@@ -410,6 +473,9 @@ class PygameChessGUI:
         elif command == '6':
             print("🎯 Switching to Pawn Advancement Test Position...")
             self.set_game_mode("pawn_advancement_test")
+        elif command == '7':
+            print("♔ Switching to Checkmate as White mode...")
+            self.set_game_mode("checkmate_as_white")
         elif command == 'EVAL':
             info = self.engine.get_evaluator_info()
             print(f"🧠 Current Evaluator: {info['name']}")
@@ -436,6 +502,7 @@ class PygameChessGUI:
         print("  4: Checkmate Defense Mode")
         print("  5: Computer vs Computer")
         print("  6: Pawn Advancement Test Position")
+        print("  7: Checkmate as White")
         print("  E: Show current evaluator info")
         print("  ESC: Quit")
         print("\n💡 Tip: You can type commands in the terminal or use the Pygame window!")
@@ -466,6 +533,8 @@ class PygameChessGUI:
                         self.set_game_mode("computer_vs_computer")
                     elif event.key == pygame.K_6:
                         self.set_game_mode("pawn_advancement_test")
+                    elif event.key == pygame.K_7:
+                        self.set_game_mode("checkmate_as_white")
                     elif event.key == pygame.K_e:
                         info = self.engine.get_evaluator_info()
                         print(f"🧠 Current Evaluator: {info['name']}")

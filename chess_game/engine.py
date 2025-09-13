@@ -1838,7 +1838,7 @@ class MinimaxEngine(Engine):
                     moves_checked += 1
                     
                     if move_wdl is not None:
-                        # The WDL value is from the perspective of the side that just moved
+                        # The WDL value is from the perspective of the side that will move next (after this move)
                         # We need to find the best move for the side that is about to move
                         
                         # When White is to move (board.turn was True), after making a move, board.turn becomes False (Black to move)
@@ -1848,11 +1848,11 @@ class MinimaxEngine(Engine):
                             # We want to find the best move for White
                             # The WDL value represents what Black can achieve after White's move
                             # White wants to minimize Black's best result (minimize WDL from Black's perspective)
-                            # Among moves with the same WDL, choose the one with lowest DTZ (fastest win for White)
+                            # Among moves with the same WDL, choose the one with highest DTZ (closest to 0 = fastest win for White)
                             if (best_wdl is None or 
                                 move_wdl < best_wdl or 
                                 (move_wdl == best_wdl and move_dtz is not None and 
-                                 (best_dtz is None or move_dtz < best_dtz))):
+                                 (best_dtz is None or move_dtz > best_dtz))):
                                 best_wdl = move_wdl
                                 best_dtz = move_dtz
                                 best_move = move
