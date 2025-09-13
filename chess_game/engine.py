@@ -674,16 +674,16 @@ class MinimaxEngine(Engine):
             self.opening_book = OpeningBook(book_file_path, random_seed=time_seed)
             
             # Configure opening book parameters from config
-            wdl_threshold = opening_book_config.get("wdl_threshold", 0.05)
-            min_games = opening_book_config.get("min_games", 100)
+            eval_threshold = opening_book_config.get("eval_threshold", 0.1)
+            min_games = opening_book_config.get("min_games", 10)
             
-            self.opening_book.set_wdl_threshold(wdl_threshold)
+            self.opening_book.set_eval_threshold(eval_threshold)
             self.opening_book.set_min_games(min_games)
             
             if not self.quiet:
                 stats = self.opening_book.get_book_stats()
                 self.logger.log_info(f"Opening book loaded: {stats['total_positions']} positions, {stats['total_moves']} moves")
-                self.logger.log_info(f"Opening book config: WDL threshold={wdl_threshold}, min games={min_games}")
+                self.logger.log_info(f"Opening book config: eval threshold={eval_threshold}, min games={min_games}")
             
         except OpeningBookError as e:
             if not self.quiet:
@@ -752,7 +752,7 @@ class MinimaxEngine(Engine):
             opening_move = self.opening_book.get_move(board)
             if opening_move:
                 # Format: ℹ️  Opening Book hit. Found moves: e6 [0.625] d4 [0.622]. Playing move: e6
-                moves_str = " ".join([f"{move} [{wdl:.3f}]" for move, wins, draws, losses, wdl in available_moves_detailed])
+                moves_str = " ".join([f"{move} [{eval:.3f}]" for move, count, eval in available_moves_detailed])
                 message = f"ℹ️  Opening Book hit. Found moves: {moves_str}. Playing move: {board.san(opening_move)}"
                 self.logger.log_info(message)
                 return opening_move
@@ -820,6 +820,7 @@ class MinimaxEngine(Engine):
         best_move = None
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
+        previous_iteration_move_order = None  # Track full move order from previous iteration
         
         # Phase 1: Perform shallow search for initial move ordering
         self.logger.log_info("Phase 1: Shallow search (depth 2) for move ordering...")
@@ -854,15 +855,17 @@ class MinimaxEngine(Engine):
             beta = float('inf')
             iteration_has_timeouts = False  # Track if any moves timed out
             first_completed_move = None  # Track if we got at least one completed move
+            move_evaluations = []  # Track move evaluations for ordering next iteration
             
             # Start search visualization for this iteration
             self.visualizer.start_search(board, current_depth)
             
-            # Evaluate moves in optimal order (use previous best move first if available)
-            if iteration > 1 and best_move:
-                # Reorder moves to put previous best move first
-                reordered_moves = [best_move] + [m for m in sorted_moves if m != best_move]
+            # Evaluate moves in optimal order
+            if iteration > 1 and previous_iteration_move_order:
+                # Use the full move order from the previous iteration (sorted by evaluation)
+                reordered_moves = previous_iteration_move_order
             else:
+                # First iteration uses shallow search order
                 reordered_moves = sorted_moves
             
             # Log move order for this iteration
@@ -942,6 +945,9 @@ class MinimaxEngine(Engine):
                     alpha = max(alpha, value)
                 else:  # Black to move: minimize
                     beta = min(beta, value)
+                
+                # Track move evaluation for ordering next iteration
+                move_evaluations.append((move, value))
             
             # Update completed_depth based on whether all moves completed
             if first_completed_move is not None and not iteration_has_timeouts:
@@ -952,6 +958,18 @@ class MinimaxEngine(Engine):
                 self.logger.log_info(f"Depth {current_depth} had timeouts - using best move from incomplete depth {current_depth}")
             else:
                 self.logger.log_info(f"Depth {current_depth} had no completed moves - keeping previous best move from depth {completed_depth}")
+            
+            # Sort moves by evaluation for next iteration (if we have evaluations)
+            if move_evaluations:
+                # Sort moves by evaluation (best first for the side to move)
+                # This creates the move order for the next iteration based on actual search results
+                if board.turn:  # White to move: sort by descending evaluation
+                    move_evaluations.sort(key=lambda x: x[1], reverse=True)
+                else:  # Black to move: sort by ascending evaluation
+                    move_evaluations.sort(key=lambda x: x[1], reverse=False)
+                
+                # Store the ordered moves for next iteration
+                previous_iteration_move_order = [move for move, eval_score in move_evaluations]
             
             # Log iteration completion
             iteration_time = time.time() - start_time

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Create opening book from PGN games.
+Create opening book from PGN games with evaluation data.
 
 Usage:
     zstdcat lichess-games.pgn.zst | python create_opening_book_from_games.py
 
-This script reads PGN games from stdin and creates a WDL-format opening book
-by tracking move sequences and their win/draw/loss statistics.
+This script reads PGN games from stdin and creates an eval-based opening book
+by tracking move sequences and their evaluation statistics. Only games with
+evaluation annotations (%eval) are included.
 """
 
 import sys
@@ -16,13 +17,12 @@ from collections import defaultdict
 from typing import Dict, List, Tuple, Optional
 
 # Configuration options
-MIN_ELO_RATING = 1600  # Minimum ELO rating for both players
-MAX_MOVES_TO_TRACK = 12  # Maximum number of moves to track in opening book
-MIN_GAMES_FOR_POSITION = 5000  # Minimum number of games required for a position to be included
-MIN_TIME_CONTROL_SECONDS = 180  # Minimum base time in seconds (e.g., 180 = 3 minutes)
-MIN_MOVE_FREQUENCY_RATIO = 0.1  # Minimum frequency ratio for moves (e.g., 0.1 = 10% of most common move)
-MAX_WDL_SCORE_THRESHOLD = 0.05  # Maximum WDL score difference from best move (absolute threshold)
-OUTPUT_FILE = "lichess-opening-book.txt"
+MIN_ELO_RATING = 100  # Minimum ELO rating for both players
+MAX_MOVES_TO_TRACK = 14  # Maximum number of moves to track in opening book
+MIN_GAMES_FOR_POSITION = 10  # Minimum number of games required for a position to be included (reduced for eval data)
+MIN_TIME_CONTROL_SECONDS = 10  # Minimum base time in seconds (e.g., 180 = 3 minutes)
+MIN_MOVE_FREQUENCY_RATIO = 0.01  # Minimum frequency ratio for moves (e.g., 0.1 = 10% of most common move)
+OUTPUT_FILE = "lichess-opening-book-eval.txt"
 CHECKPOINT_INTERVAL = 10000000  # Write checkpoint every N games (10M)
 VERBOSE_LOGGING = False  # Set to True to enable debug logging
 
@@ -45,43 +45,56 @@ def parse_pgn_header(header_lines: List[str]) -> Dict[str, str]:
                 header[tag] = value
     return header
 
-def parse_moves(move_text: str) -> List[str]:
-    """Parse move text and extract individual moves."""
+def parse_moves_with_eval(move_text: str) -> List[Tuple[str, float]]:
+    """Parse move text and extract individual moves with their evaluations."""
     # VERBOSE LOGGING - DELETE WHEN DONE DEBUGGING
     if VERBOSE_LOGGING:
-        print(f"DEBUG parse_moves INPUT: {move_text[:100]}...")
-    
-    # Remove clock annotations like { [%clk 0:03:00] }
-    move_text = re.sub(r'\s*\{\s*\[%clk[^]]*\]\s*\}', '', move_text)
-    
-    # Remove other annotations
-    move_text = re.sub(r'\s*\{[^}]*\}', '', move_text)
+        print(f"DEBUG parse_moves_with_eval INPUT: {move_text[:100]}...")
     
     # Remove game result at the end
     move_text = re.sub(r'\s+(1-0|0-1|1/2-1/2)\s*$', '', move_text)
     
-    moves = []
+    moves_with_eval = []
     
-    # Pattern to match both white moves (1. g3) and black moves (1... d5)
-    # This will capture: "1. g3", "1... d5", "2. Nf3", "2... Nf6", etc.
-    # Use word boundaries to avoid matching partial patterns
-    pattern = r'(\d+)(\.\.\.|\.)\s+([^\s]+)'
+    # Pattern to match moves with eval annotations
+    # This captures: "1. e4 { [%eval 0.18] [%clk 0:03:00] }"
+    # or "1... e5 { [%eval 0.22] [%clk 0:03:00] }"
+    pattern = r'(\d+)(\.\.\.|\.)\s+([^\s]+)\s*\{\s*\[%eval\s+([^\]]+)\]\s*\[%clk[^]]*\]\s*\}'
     
     for match in re.finditer(pattern, move_text):
         move_num = int(match.group(1))
         move_type = match.group(2)  # "." for white, "..." for black
         move = match.group(3)
+        eval_str = match.group(4)
         
         if move and not move.endswith('...'):
             # Strip evaluation markings (?, !, !!, ?!, etc.)
             move = re.sub(r'[?!]+$', '', move)
-            moves.append(move)
+            
+            # Parse evaluation value
+            try:
+                # Handle eval values like "0.18", "-0.11", "#+1", "#-2", etc.
+                if eval_str.startswith('#'):
+                    # Mate in X moves - convert to large positive/negative number
+                    if eval_str.startswith('#+'):
+                        eval_value = 100.0  # Large positive for mate advantage
+                    elif eval_str.startswith('#-'):
+                        eval_value = -100.0  # Large negative for mate disadvantage
+                    else:
+                        eval_value = 0.0
+                else:
+                    eval_value = float(eval_str)
+                
+                moves_with_eval.append((move, eval_value))
+            except ValueError:
+                # Skip moves with invalid eval values
+                continue
     
     # VERBOSE LOGGING - DELETE WHEN DONE DEBUGGING
     if VERBOSE_LOGGING:
-        print(f"DEBUG parse_moves OUTPUT: {moves}")
+        print(f"DEBUG parse_moves_with_eval OUTPUT: {moves_with_eval}")
     
-    return moves
+    return moves_with_eval
 
 def get_game_result(result: str) -> str:
     """Convert PGN result to WDL format."""
@@ -120,121 +133,142 @@ def should_include_game(header: Dict[str, str], rejection_reasons: Dict[str, int
             return False
             
         # Game must have a valid result
-        result = header.get('Result', '')
-        if result not in ['1-0', '0-1', '1/2-1/2']:
-            rejection_reasons['InvalidResult'] += 1
-            return False
+        #result = header.get('Result', '')
+        #if result not in ['1-0', '0-1', '1/2-1/2']:
+        #    rejection_reasons['InvalidResult'] += 1
+        #    return False
         
         # Game must have normal termination or time forfeit
-        termination = header.get('Termination', '')
-        if termination not in ['Normal', 'Time forfeit']:
-            rejection_reasons['Termination'] += 1
-            return False
+        #termination = header.get('Termination', '')
+        #if termination not in ['Normal', 'Time forfeit']:
+        #    rejection_reasons['Termination'] += 1
+        #    return False
         
         # Game must meet minimum time control requirement
-        time_control = header.get('TimeControl', '')
-        base_time_seconds = parse_time_control(time_control)
-        if base_time_seconds < MIN_TIME_CONTROL_SECONDS:
-            rejection_reasons['TimeControl'] += 1
-            return False
+        #time_control = header.get('TimeControl', '')
+        #base_time_seconds = parse_time_control(time_control)
+        #if base_time_seconds < MIN_TIME_CONTROL_SECONDS:
+       #     rejection_reasons['TimeControl'] += 1
+       #     return False
             
         return True
     except (ValueError, TypeError):
         rejection_reasons['ParseError'] += 1
         return False
 
-def create_move_sequence_pairs(moves: List[str], max_moves: int = MAX_MOVES_TO_TRACK) -> List[Tuple[str, str, str]]:
-    """Create pairs of (sequence, next_move, turn) for opening book tracking."""
+def create_move_sequence_pairs_with_eval(moves_with_eval: List[Tuple[str, float]], max_moves: int = MAX_MOVES_TO_TRACK) -> List[Tuple[str, str, str, float]]:
+    """Create pairs of (sequence, next_move, turn, eval) for opening book tracking."""
     # VERBOSE LOGGING - DELETE WHEN DONE DEBUGGING
     if VERBOSE_LOGGING:
-        print(f"DEBUG create_move_sequence_pairs INPUT: moves={moves}, max_moves={max_moves}")
+        print(f"DEBUG create_move_sequence_pairs_with_eval INPUT: moves_with_eval={moves_with_eval}, max_moves={max_moves}")
     
     pairs = []
     
+    # Extract just the moves for sequence building
+    moves = [move for move, _ in moves_with_eval]
+    
     # Handle starting position -> first move (White to move)
-    if len(moves) >= 1:
-        pairs.append(("", moves[0], WHITE))
+    if len(moves_with_eval) >= 1:
+        move, eval_value = moves_with_eval[0]
+        pairs.append(("", move, WHITE, eval_value))
     
     # Handle sequence -> next move pairs
-    if max_moves >= 1 and len(moves) >= 1:
-        if len(moves) >= 2:
-            pairs.append((f"1. {moves[0]}", moves[1], BLACK))
-    if max_moves >= 2 and len(moves) >= 2:
-        if len(moves) >= 3:
-            pairs.append((f"1. {moves[0]} {moves[1]}", moves[2], WHITE))
-    if max_moves >= 3 and len(moves) >= 3:
-        if len(moves) >= 4:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]}", moves[3], BLACK))
-    if max_moves >= 4 and len(moves) >= 4:
-        if len(moves) >= 5:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]}", moves[4], WHITE))
-    if max_moves >= 5 and len(moves) >= 5:
-        if len(moves) >= 6:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]}", moves[5], BLACK))
-    if max_moves >= 6 and len(moves) >= 6:
-        if len(moves) >= 7:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]}", moves[6], WHITE))
-    if max_moves >= 7 and len(moves) >= 7:
-        if len(moves) >= 8:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]}", moves[7], BLACK))
-    if max_moves >= 8 and len(moves) >= 8:
-        if len(moves) >= 9:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]}", moves[8], WHITE))
-    if max_moves >= 9 and len(moves) >= 9:
-        if len(moves) >= 10:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]}", moves[9], BLACK))
-    if max_moves >= 10 and len(moves) >= 10:
-        if len(moves) >= 11:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]}", moves[10], WHITE))
-    if max_moves >= 11 and len(moves) >= 11:
-        if len(moves) >= 12:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]}", moves[11], BLACK))
-    if max_moves >= 12 and len(moves) >= 12:
-        if len(moves) >= 13:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]}", moves[12], WHITE))
-    if max_moves >= 13 and len(moves) >= 13:
-        if len(moves) >= 14:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]}", moves[13], BLACK))
-    if max_moves >= 14 and len(moves) >= 14:
-        if len(moves) >= 15:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]}", moves[14], WHITE))
-    if max_moves >= 15 and len(moves) >= 15:
-        if len(moves) >= 16:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]}", moves[15], BLACK))
-    if max_moves >= 16 and len(moves) >= 16:
-        if len(moves) >= 17:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]}", moves[16], WHITE))
-    if max_moves >= 17 and len(moves) >= 17:
-        if len(moves) >= 18:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]} 9. {moves[16]}", moves[17], BLACK))
-    if max_moves >= 18 and len(moves) >= 18:
-        if len(moves) >= 19:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]} 9. {moves[16]} {moves[17]}", moves[18], WHITE))
-    if max_moves >= 19 and len(moves) >= 19:
-        if len(moves) >= 20:
-            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]} 9. {moves[16]} {moves[17]} 10. {moves[18]}", moves[19], BLACK))
+    if max_moves >= 1 and len(moves_with_eval) >= 1:
+        if len(moves_with_eval) >= 2:
+            move, eval_value = moves_with_eval[1]
+            pairs.append((f"1. {moves[0]}", move, BLACK, eval_value))
+    if max_moves >= 2 and len(moves_with_eval) >= 2:
+        if len(moves_with_eval) >= 3:
+            move, eval_value = moves_with_eval[2]
+            pairs.append((f"1. {moves[0]} {moves[1]}", move, WHITE, eval_value))
+    if max_moves >= 3 and len(moves_with_eval) >= 3:
+        if len(moves_with_eval) >= 4:
+            move, eval_value = moves_with_eval[3]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]}", move, BLACK, eval_value))
+    if max_moves >= 4 and len(moves_with_eval) >= 4:
+        if len(moves_with_eval) >= 5:
+            move, eval_value = moves_with_eval[4]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]}", move, WHITE, eval_value))
+    if max_moves >= 5 and len(moves_with_eval) >= 5:
+        if len(moves_with_eval) >= 6:
+            move, eval_value = moves_with_eval[5]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]}", move, BLACK, eval_value))
+    if max_moves >= 6 and len(moves_with_eval) >= 6:
+        if len(moves_with_eval) >= 7:
+            move, eval_value = moves_with_eval[6]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]}", move, WHITE, eval_value))
+    if max_moves >= 7 and len(moves_with_eval) >= 7:
+        if len(moves_with_eval) >= 8:
+            move, eval_value = moves_with_eval[7]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]}", move, BLACK, eval_value))
+    if max_moves >= 8 and len(moves_with_eval) >= 8:
+        if len(moves_with_eval) >= 9:
+            move, eval_value = moves_with_eval[8]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]}", move, WHITE, eval_value))
+    if max_moves >= 9 and len(moves_with_eval) >= 9:
+        if len(moves_with_eval) >= 10:
+            move, eval_value = moves_with_eval[9]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]}", move, BLACK, eval_value))
+    if max_moves >= 10 and len(moves_with_eval) >= 10:
+        if len(moves_with_eval) >= 11:
+            move, eval_value = moves_with_eval[10]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]}", move, WHITE, eval_value))
+    if max_moves >= 11 and len(moves_with_eval) >= 11:
+        if len(moves_with_eval) >= 12:
+            move, eval_value = moves_with_eval[11]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]}", move, BLACK, eval_value))
+    if max_moves >= 12 and len(moves_with_eval) >= 12:
+        if len(moves_with_eval) >= 13:
+            move, eval_value = moves_with_eval[12]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]}", move, WHITE, eval_value))
+    if max_moves >= 13 and len(moves_with_eval) >= 13:
+        if len(moves_with_eval) >= 14:
+            move, eval_value = moves_with_eval[13]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]}", move, BLACK, eval_value))
+    if max_moves >= 14 and len(moves_with_eval) >= 14:
+        if len(moves_with_eval) >= 15:
+            move, eval_value = moves_with_eval[14]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]}", move, WHITE, eval_value))
+    if max_moves >= 15 and len(moves_with_eval) >= 15:
+        if len(moves_with_eval) >= 16:
+            move, eval_value = moves_with_eval[15]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]}", move, BLACK, eval_value))
+    if max_moves >= 16 and len(moves_with_eval) >= 16:
+        if len(moves_with_eval) >= 17:
+            move, eval_value = moves_with_eval[16]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]}", move, WHITE, eval_value))
+    if max_moves >= 17 and len(moves_with_eval) >= 17:
+        if len(moves_with_eval) >= 18:
+            move, eval_value = moves_with_eval[17]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]} 9. {moves[16]}", move, BLACK, eval_value))
+    if max_moves >= 18 and len(moves_with_eval) >= 18:
+        if len(moves_with_eval) >= 19:
+            move, eval_value = moves_with_eval[18]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]} 9. {moves[16]} {moves[17]}", move, WHITE, eval_value))
+    if max_moves >= 19 and len(moves_with_eval) >= 19:
+        if len(moves_with_eval) >= 20:
+            move, eval_value = moves_with_eval[19]
+            pairs.append((f"1. {moves[0]} {moves[1]} 2. {moves[2]} {moves[3]} 3. {moves[4]} {moves[5]} 4. {moves[6]} {moves[7]} 5. {moves[8]} {moves[9]} 6. {moves[10]} {moves[11]} 7. {moves[12]} {moves[13]} 8. {moves[14]} {moves[15]} 9. {moves[16]} {moves[17]} 10. {moves[18]}", move, BLACK, eval_value))
     
     # VERBOSE LOGGING - DELETE WHEN DONE DEBUGGING
     if VERBOSE_LOGGING:
-        print(f"DEBUG create_move_sequence_pairs OUTPUT: {pairs}")
+        print(f"DEBUG create_move_sequence_pairs_with_eval OUTPUT: {pairs}")
     
     return pairs
 
-def calculate_wdl_stats(wdl_counts: Dict[str, int]) -> Tuple[int, int, int, float]:
-    """Calculate WDL statistics and WDL score."""
-    wins = wdl_counts.get('W', 0)
-    draws = wdl_counts.get('D', 0)
-    losses = wdl_counts.get('L', 0)
-    total = wins + draws + losses
+def calculate_eval_stats(eval_data: Dict[str, float]) -> Tuple[int, float]:
+    """Calculate eval statistics: count and average eval."""
+    count = eval_data.get('count', 0)
+    total_eval = eval_data.get('total_eval', 0.0)
     
-    if total == 0:
-        return 0, 0, 0, 0.0
+    if count == 0:
+        return 0, 0.0
     
-    wdl_score = (wins + draws * 0.5) / total
-    return wins, draws, losses, wdl_score
+    avg_eval = total_eval / count
+    return count, avg_eval
 
 def write_opening_book(opening_book: Dict, output_file: str) -> None:
-    """Write opening book to file with all filtering applied."""
+    """Write opening book to file with eval-based filtering applied."""
     with open(output_file, 'w') as f:
         # Iterate through each sequence in the opening book
         for sequence_str in sorted(opening_book.keys()):
@@ -243,60 +277,25 @@ def write_opening_book(opening_book: Dict, output_file: str) -> None:
             
             # Filter next moves by minimum game count
             filtered_moves = {}
-            for next_move, result_counts in next_moves.items():
-                # Exclude 'turn' key when calculating total games
-                total_games = sum(v for k, v in result_counts.items() if k != 'turn')
-                if total_games >= MIN_GAMES_FOR_POSITION:
-                    filtered_moves[next_move] = result_counts
+            for next_move, eval_data in next_moves.items():
+                count = eval_data.get('count', 0)
+                if count >= MIN_GAMES_FOR_POSITION:
+                    filtered_moves[next_move] = eval_data
             
             # Apply frequency ratio filtering
             if filtered_moves:
                 # Find the most common move's game count
-                most_common_games = max(sum(v for k, v in result_counts.items() if k != 'turn') for result_counts in filtered_moves.values())
+                most_common_games = max(eval_data.get('count', 0) for eval_data in filtered_moves.values())
                 min_games_for_frequency = most_common_games * MIN_MOVE_FREQUENCY_RATIO
                 
                 # Filter out moves that are too rare compared to the most common move
                 frequency_filtered_moves = {}
-                for next_move, result_counts in filtered_moves.items():
-                    total_games = sum(v for k, v in result_counts.items() if k != 'turn')
-                    if total_games >= min_games_for_frequency:
-                        frequency_filtered_moves[next_move] = result_counts
+                for next_move, eval_data in filtered_moves.items():
+                    count = eval_data.get('count', 0)
+                    if count >= min_games_for_frequency:
+                        frequency_filtered_moves[next_move] = eval_data
                 
                 filtered_moves = frequency_filtered_moves
-            
-            # Apply WDL score filtering
-            if filtered_moves:
-                # Find the best WDL score among all moves
-                # For White moves: higher WDL score is better
-                # For Black moves: lower WDL score is better (since WDL is from White's perspective)
-                best_wdl_score = 0.0
-                worst_wdl_score = 1.0
-                
-                for next_move, result_counts in filtered_moves.items():
-                    _, _, _, wdl_score = calculate_wdl_stats(result_counts)
-                    current_turn = result_counts.get('turn', WHITE)  # Default to White
-                    
-                    if current_turn == WHITE:
-                        best_wdl_score = max(best_wdl_score, wdl_score)
-                    else:  # BLACK
-                        worst_wdl_score = min(worst_wdl_score, wdl_score)
-                
-                # Filter out moves that are too weak compared to the best move
-                wdl_filtered_moves = {}
-                for next_move, result_counts in filtered_moves.items():
-                    _, _, _, wdl_score = calculate_wdl_stats(result_counts)
-                    current_turn = result_counts.get('turn', WHITE)  # Default to White
-                    
-                    if current_turn == WHITE:
-                        # For White: keep moves within MAX_WDL_SCORE_THRESHOLD of best
-                        if wdl_score >= best_wdl_score - MAX_WDL_SCORE_THRESHOLD:
-                            wdl_filtered_moves[next_move] = result_counts
-                    else:  # BLACK
-                        # For Black: keep moves within MAX_WDL_SCORE_THRESHOLD of worst (best for Black)
-                        if wdl_score <= worst_wdl_score + MAX_WDL_SCORE_THRESHOLD:
-                            wdl_filtered_moves[next_move] = result_counts
-                
-                filtered_moves = wdl_filtered_moves
             
             # Only write this sequence if it has moves with enough games
             if filtered_moves:
@@ -305,19 +304,19 @@ def write_opening_book(opening_book: Dict, output_file: str) -> None:
                 if VERBOSE_LOGGING:
                     print(f"DEBUG: Writing MOVES: {sequence_str}")
                 
-                # Sort moves by WDL score (descending for White, ascending for Black)
+                # Sort moves by average eval (descending for White, ascending for Black)
                 def sort_key(item):
-                    next_move, result_counts = item
-                    _, _, _, wdl_score = calculate_wdl_stats(result_counts)
-                    current_turn = result_counts.get('turn', WHITE)  # Default to White
+                    next_move, eval_data = item
+                    count, avg_eval = calculate_eval_stats(eval_data)
+                    current_turn = eval_data.get('turn', WHITE)  # Default to White
                     
                     if current_turn == WHITE:
-                        # For White: higher WDL score is better (descending order)
-                        return wdl_score
+                        # For White: higher eval is better (descending order)
+                        return avg_eval
                     else:  # BLACK
-                        # For Black: lower WDL score is better (ascending order)
+                        # For Black: lower eval is better (ascending order)
                         # Use negative to reverse the sort order
-                        return -wdl_score
+                        return -avg_eval
                 
                 sorted_moves = sorted(
                     filtered_moves.items(),
@@ -325,13 +324,13 @@ def write_opening_book(opening_book: Dict, output_file: str) -> None:
                     reverse=True
                 )
                 
-                # Write each next move with its WDL stats
-                for next_move, result_counts in sorted_moves:
-                    wins, draws, losses, wdl_score = calculate_wdl_stats(result_counts)
-                    f.write(f"{next_move} {wins} | {draws} | {losses} | {wdl_score:.3f}\n")
+                # Write each next move with its eval stats
+                for next_move, eval_data in sorted_moves:
+                    count, avg_eval = calculate_eval_stats(eval_data)
+                    f.write(f"{next_move} {count} | {avg_eval:.3f}\n")
                     # VERBOSE LOGGING - DELETE WHEN DONE DEBUGGING
                     if VERBOSE_LOGGING:
-                        print(f"DEBUG: Wrote move {next_move} {wins} | {draws} | {losses} | {wdl_score:.3f}")
+                        print(f"DEBUG: Wrote move {next_move} {count} | {avg_eval:.3f}")
                 
                 f.write("\n")
 
@@ -343,11 +342,11 @@ def main():
         print("Usage: zstdcat lichess-games.pgn.zst | python3 create_opening_book_from_games.py")
         sys.exit(1)
     
-    # Dictionary to store move sequences and their WDL statistics
-    # Key: move sequence string, Value: dict with W/D/L counts
-    # Track opening book statistics: opening_book[sequence_str][next_move][result]
+    # Dictionary to store move sequences and their eval statistics
+    # Key: move sequence string, Value: dict with eval data
+    # Track opening book statistics: opening_book[sequence_str][next_move]['count'] and 'total_eval'
     # Also track whose turn it is: opening_book[sequence_str][next_move]['turn']
-    opening_book = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+    opening_book = defaultdict(lambda: defaultdict(lambda: {'count': 0, 'total_eval': 0.0, 'turn': WHITE}))
     
     games_processed = 0
     games_included = 0
@@ -357,12 +356,14 @@ def main():
         'InvalidResult': 0,
         'Termination': 0,
         'TimeControl': 0,
-        'ParseError': 0
+        'ParseError': 0,
+        'NoEvalData': 0
     }
     
     print(f"Processing games with minimum ELO rating: {MIN_ELO_RATING}")
     print(f"Tracking up to {MAX_MOVES_TO_TRACK} moves per game")
     print(f"Minimum games per position: {MIN_GAMES_FOR_POSITION}")
+    print("Only including games with evaluation data (%eval annotations)")
     print()
     
     # Stream games line by line from stdin
@@ -393,22 +394,23 @@ def main():
                 
                 # Check if game should be included
                 if should_include_game(header, rejection_reasons):
-                    games_included += 1
-                    
-                    # Parse moves
-                    moves = parse_moves(move_text)
-                    if moves:
-                        # Get game result from white's perspective
-                        result = get_game_result(header['Result'])
+                    # Parse moves with eval data
+                    moves_with_eval = parse_moves_with_eval(move_text)
+                    if moves_with_eval:
+                        games_included += 1
                         
-                # Create move sequence pairs
-                sequence_pairs = create_move_sequence_pairs(moves)
-                
-                # Update statistics for each (sequence, next_move, turn) pair
-                for sequence, next_move, turn in sequence_pairs:
-                    opening_book[sequence][next_move][result] += 1
-                    # Store turn information (overwrites each time, but should be consistent)
-                    opening_book[sequence][next_move]['turn'] = turn
+                        # Create move sequence pairs with eval data
+                        sequence_pairs = create_move_sequence_pairs_with_eval(moves_with_eval)
+                        
+                        # Update statistics for each (sequence, next_move, turn, eval) pair
+                        for sequence, next_move, turn, eval_value in sequence_pairs:
+                            opening_book[sequence][next_move]['count'] += 1
+                            opening_book[sequence][next_move]['total_eval'] += eval_value
+                            # Store turn information (overwrites each time, but should be consistent)
+                            opening_book[sequence][next_move]['turn'] = turn
+                    else:
+                        # Game has no eval data
+                        rejection_reasons['NoEvalData'] += 1
                 
                 # Progress indicator and checkpoint
                 if games_processed % 100000 == 0:
@@ -454,7 +456,7 @@ def main():
                 
                 # Write checkpoint every CHECKPOINT_INTERVAL games
                 if games_processed % CHECKPOINT_INTERVAL == 0 and games_processed > 0:
-                    checkpoint_file = f"lichess-opening-book.{games_processed}.txt"
+                    checkpoint_file = f"lichess-opening-book-eval.{games_processed}.txt"
                     print(f"\nWriting checkpoint: {checkpoint_file}")
                     write_opening_book(opening_book, checkpoint_file)
                     print(f"Checkpoint written: {checkpoint_file}")

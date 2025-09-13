@@ -1,25 +1,25 @@
 """
-Opening book implementation for chess engine using WDL (Win-Draw-Loss) statistics.
+Opening book implementation for chess engine using evaluation-based statistics.
 
 Format:
 - MOVES: [move sequence] - indicates the position reached by the move sequence
-- move W | D | L | WDL - available moves with win/draw/loss counts and WDL score
+- move count | avg_eval - available moves with count and average evaluation
 - Empty lines are ignored
 
 Example:
 MOVES: 1. e4 e5
-Nf3 40123 | 26789 | 22544 | 0.598
-Bc4 22345 | 12345 | 10988 | 0.625
-d4 11234 | 6789 | 5433 | 0.622
+Nc3 615333 | 0.538
+Nf3 5785546 | 0.4
+f4 842869 | -0.523
 
-Important: WDL scores are ALWAYS from White's perspective in the book data.
-When Black is to move, the engine uses (1 - WDL) to get the correct score from Black's perspective.
+Important: Evaluation scores are ALWAYS from White's perspective in the book data.
+When Black is to move, the engine uses (-eval) to get the correct score from Black's perspective.
 
 The engine will:
 1. Track moves played so far
 2. Find matching MOVES: section in the book
-3. Adjust WDL scores based on who is to move (White: use as-is, Black: use 1-WDL)
-4. Filter moves by WDL threshold (configurable)
+3. Adjust eval scores based on who is to move (White: use as-is, Black: use -eval)
+4. Filter moves by eval threshold (configurable)
 5. Select randomly from qualifying moves
 """
 
@@ -36,17 +36,17 @@ class OpeningBookError(Exception):
 
 class OpeningBook:
     """
-    Opening book implementation using WDL (Win-Draw-Loss) statistics.
+    Opening book implementation using evaluation-based statistics.
     
     The book stores positions as move sequences and provides moves with their
-    historical performance statistics. Move selection is based on WDL scores
+    evaluation statistics. Move selection is based on evaluation scores
     with configurable thresholds.
     """
     
     def __init__(self, book_file_path: Optional[str] = None, random_seed: Optional[int] = None):
-        self.book_data: Dict[str, List[Tuple[str, int, int, int, float]]] = {}
-        self.wdl_threshold = 0.01  # Moves within 0.01 of best WDL are considered
-        self.min_games = 100  # Minimum games required for a move to be considered
+        self.book_data: Dict[str, List[Tuple[str, int, float]]] = {}
+        self.eval_threshold = 0.1  # Moves within 0.1 of best eval are considered
+        self.min_games = 10  # Minimum games required for a move to be considered
         
         # Set random seed based on current time if not provided
         if random_seed is None:
@@ -58,7 +58,7 @@ class OpeningBook:
     
     def load_book(self, file_path: str) -> None:
         """
-        Load opening book from text file with WDL format.
+        Load opening book from text file with eval format.
         
         Args:
             file_path: Path to the opening book file
@@ -89,7 +89,7 @@ class OpeningBook:
                     # Parse MOVES: header
                     current_moves_sequence = self._parse_moves_header(line, line_num)
                 elif current_moves_sequence is not None:
-                    # Parse move with WDL statistics
+                    # Parse move with eval statistics
                     self._parse_move_line(line, current_moves_sequence, line_num)
                 else:
                     raise OpeningBookError(f"Line {line_num}: Move data found before MOVES: header")
@@ -155,7 +155,7 @@ class OpeningBook:
     
     def _parse_move_line(self, line: str, moves_sequence: str, line_num: int) -> None:
         """
-        Parse a move line with WDL statistics.
+        Parse a move line with eval statistics.
         
         Args:
             line: The move line to parse
@@ -165,45 +165,30 @@ class OpeningBook:
         Raises:
             OpeningBookError: If format is invalid
         """
-        # Format: move W | D | L | WDL
+        # Format: move count | avg_eval
         parts = line.split('|')
         
-        if len(parts) != 4:
-            raise OpeningBookError(f"Line {line_num}: Expected format 'move W | D | L | WDL', got: {line}")
+        if len(parts) != 2:
+            raise OpeningBookError(f"Line {line_num}: Expected format 'move count | avg_eval', got: {line}")
         
         try:
-            # First part contains move and wins: "e4 45623"
+            # First part contains move and count: "e4 45623"
             first_part = parts[0].strip().split()
             if len(first_part) != 2:
-                raise OpeningBookError(f"Line {line_num}: First part must contain move and wins: {parts[0]}")
+                raise OpeningBookError(f"Line {line_num}: First part must contain move and count: {parts[0]}")
             
             move = first_part[0]
-            wins = int(first_part[1])
-            draws = int(parts[1].strip())
-            losses = int(parts[2].strip())
-            wdl_score = float(parts[3].strip())
+            count = int(first_part[1])
+            avg_eval = float(parts[1].strip())
             
-            # Calculate WDL score if not provided
-            total_games = wins + draws + losses
-            if total_games == 0:
-                raise OpeningBookError(f"Line {line_num}: Total games cannot be zero")
-            
-            calculated_wdl = (wins + 0.5 * draws) / total_games
-            
-            # Use provided WDL score or calculated one
-            if wdl_score is not None:
-                # Validate WDL score matches calculated value (with small tolerance)
-                if abs(calculated_wdl - wdl_score) > 0.001:
-                    raise OpeningBookError(f"Line {line_num}: WDL score mismatch. Calculated: {calculated_wdl:.3f}, Provided: {wdl_score}")
-                final_wdl = wdl_score
-            else:
-                final_wdl = calculated_wdl
+            if count <= 0:
+                raise OpeningBookError(f"Line {line_num}: Count must be positive, got: {count}")
             
             # Store the move data
             if moves_sequence not in self.book_data:
                 self.book_data[moves_sequence] = []
             
-            self.book_data[moves_sequence].append((move, wins, draws, losses, final_wdl))
+            self.book_data[moves_sequence].append((move, count, avg_eval))
             
         except ValueError as e:
             raise OpeningBookError(f"Line {line_num}: Invalid number format: {e}")
@@ -230,7 +215,7 @@ class OpeningBook:
             board: Current board state
             
         Returns:
-            List of tuples (move_san, weight) where weight is total games played
+            List of tuples (move_san, weight) where weight is count of games with eval data
         """
         # Convert board to move sequence
         moves_sequence = self._board_to_move_sequence(board)
@@ -238,23 +223,22 @@ class OpeningBook:
         if moves_sequence not in self.book_data:
             return []
         
-        # Convert to engine-compatible format: (move, total_games)
+        # Convert to engine-compatible format: (move, count)
         compatible_moves = []
-        for move, wins, draws, losses, wdl in self.book_data[moves_sequence]:
-            total_games = wins + draws + losses
-            compatible_moves.append((move, total_games))
+        for move, count, avg_eval in self.book_data[moves_sequence]:
+            compatible_moves.append((move, count))
         
         return compatible_moves
     
-    def get_available_moves_detailed(self, board: chess.Board) -> List[Tuple[str, int, int, int, float]]:
+    def get_available_moves_detailed(self, board: chess.Board) -> List[Tuple[str, int, float]]:
         """
-        Get available moves with detailed WDL statistics.
+        Get available moves with detailed eval statistics.
         
         Args:
             board: Current board state
             
         Returns:
-            List of tuples (move_san, wins, draws, losses, wdl_score)
+            List of tuples (move_san, count, avg_eval)
         """
         # Convert board to move sequence
         moves_sequence = self._board_to_move_sequence(board)
@@ -301,8 +285,8 @@ class OpeningBook:
     
     def get_move(self, board: chess.Board) -> Optional[chess.Move]:
         """
-        Get opening move for current position using WDL-based selection.
-        WDL scores are always from White's perspective, so for Black moves we use 1-WDL.
+        Get opening move for current position using eval-based selection.
+        Eval scores are always from White's perspective, so for Black moves we use -eval.
         
         Args:
             board: Current board state
@@ -317,38 +301,38 @@ class OpeningBook:
         
         # Filter moves by minimum games threshold
         qualified_moves = [
-            (move, wins, draws, losses, wdl) 
-            for move, wins, draws, losses, wdl in available_moves
-            if wins + draws + losses >= self.min_games
+            (move, count, avg_eval) 
+            for move, count, avg_eval in available_moves
+            if count >= self.min_games
         ]
         
         if not qualified_moves:
             return None
         
-        # Adjust WDL scores based on who is to move
-        # WDL scores in book are always from White's perspective
+        # Adjust eval scores based on who is to move
+        # Eval scores in book are always from White's perspective
         if board.turn == chess.WHITE:
-            # White to move: use WDL scores as-is
-            adjusted_moves = [(move, wins, draws, losses, wdl) for move, wins, draws, losses, wdl in qualified_moves]
+            # White to move: use eval scores as-is
+            adjusted_moves = [(move, count, avg_eval) for move, count, avg_eval in qualified_moves]
         else:
-            # Black to move: use 1-WDL (invert the score)
-            adjusted_moves = [(move, wins, draws, losses, 1.0 - wdl) for move, wins, draws, losses, wdl in qualified_moves]
+            # Black to move: use -eval (invert the score)
+            adjusted_moves = [(move, count, -avg_eval) for move, count, avg_eval in qualified_moves]
         
-        # Find best adjusted WDL score
-        best_wdl = max(wdl for _, _, _, _, wdl in adjusted_moves)
+        # Find best adjusted eval score
+        best_eval = max(eval_score for _, _, eval_score in adjusted_moves)
         
-        # Filter moves within WDL threshold of best move
+        # Filter moves within eval threshold of best move
         threshold_moves = [
-            (move, wins, draws, losses, wdl)
-            for move, wins, draws, losses, wdl in adjusted_moves
-            if wdl >= best_wdl - self.wdl_threshold
+            (move, count, eval_score)
+            for move, count, eval_score in adjusted_moves
+            if eval_score >= best_eval - self.eval_threshold
         ]
         
         if not threshold_moves:
             return None
         
         # Random selection from qualifying moves
-        selected_move, _, _, _, _ = random.choice(threshold_moves)
+        selected_move, _, _ = random.choice(threshold_moves)
         
         try:
             return board.parse_san(selected_move)
@@ -365,32 +349,32 @@ class OpeningBook:
         total_positions = len(self.book_data)
         total_moves = sum(len(moves) for moves in self.book_data.values())
         
-        # Calculate average WDL score
-        all_wdl_scores = []
+        # Calculate average eval score
+        all_eval_scores = []
         for moves in self.book_data.values():
-            for _, _, _, _, wdl in moves:
-                all_wdl_scores.append(wdl)
+            for _, _, avg_eval in moves:
+                all_eval_scores.append(avg_eval)
         
-        avg_wdl = sum(all_wdl_scores) / len(all_wdl_scores) if all_wdl_scores else 0.0
+        avg_eval = sum(all_eval_scores) / len(all_eval_scores) if all_eval_scores else 0.0
         
         return {
             'total_positions': total_positions,
             'total_moves': total_moves,
-            'average_wdl_score': round(avg_wdl, 3),
-            'wdl_threshold': self.wdl_threshold,
+            'average_eval_score': round(avg_eval, 3),
+            'eval_threshold': self.eval_threshold,
             'min_games_threshold': self.min_games
         }
     
-    def set_wdl_threshold(self, threshold: float) -> None:
+    def set_eval_threshold(self, threshold: float) -> None:
         """
-        Set the WDL threshold for move selection.
+        Set the eval threshold for move selection.
         
         Args:
-            threshold: Moves within this value of the best WDL will be considered
+            threshold: Moves within this value of the best eval will be considered
         """
-        if not 0.0 <= threshold <= 1.0:
-            raise ValueError("WDL threshold must be between 0.0 and 1.0")
-        self.wdl_threshold = threshold
+        if threshold < 0.0:
+            raise ValueError("Eval threshold must be non-negative")
+        self.eval_threshold = threshold
     
     def set_min_games(self, min_games: int) -> None:
         """
