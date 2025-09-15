@@ -5,7 +5,7 @@
     "mobility_evaluation_mode": "adaptive",
     "mobility_weights": {
         "knight": 3,
-        "bishop": 4,
+        "bishop": 3,
         "rook": 2
     },
     "mobility_enabled": {
@@ -42,7 +42,7 @@
     "total_piece_values": 8180,
     "simplification_material_diff_threshold": 1200,
     "simplification_material_diff_multiplier": 0.00001,
-    "time_management_moves_remaining": 20,
+    "time_management_moves_remaining": 15,
     "time_management_increment_used": 0.8,
     "checkmate_bonus": 100000,
     "draw_value": 0,
@@ -54,14 +54,14 @@
     "quiescence_include_value_threshold": false,
     "quiescence_value_threshold": 500,
     "moveorder_shallow_search_depth": 2,
-    "moveorder_shallow_search_quiescence_depth_limit": 2,
+    "moveorder_shallow_search_quiescence_depth_limit": 4,
     "cache_size_limit": 100000,
     "kingside_castling_bonus": 45,
     "queenside_castling_bonus": 40,
     "kingside_castling_right_penalty": -15,
     "queenside_castling_right_penalty": -10,
-    "pawn_shield_weight": 10,
-    "bishop_pair_bonus": 20,
+    "pawn_shield_weight": 20,
+    "bishop_pair_bonus": 10,
     "king_safety_weight": 1.0,
     "evaluation_cache_enabled": false,
     "evaluation_cache_size": 100000,
@@ -74,8 +74,8 @@
         "enabled": true,
         "file_path": "opening_book.txt",
         "max_depth": 20,
-        "eval_threshold": 0.1,
-        "min_games": 5
+        "eval_threshold": 0.05,
+        "min_games": 1
     },
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
 }
