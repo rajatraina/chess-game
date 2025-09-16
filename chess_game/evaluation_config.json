@@ -9,7 +9,7 @@
         "rook": 2
     },
     "mobility_enabled": {
-        "knight": false,
+        "knight": true,
         "bishop": true,
         "rook": true
     },
@@ -25,8 +25,8 @@
     "search_depth": 3,
     "search_depth_starting": 3,
     "max_search_depth": 5,
-    "search_deepening_time_budget_fraction": 0.2,
-    "search_deepening_min_time_budget": 25.0,
+    "search_deepening_time_budget_fraction": 0.3,
+    "search_deepening_min_time_budget": 20.0,
     "time_budget_check_frequency": 1000,
     "time_budget_early_exit_enabled": true,
     "time_budget_safety_margin": 0.1,
