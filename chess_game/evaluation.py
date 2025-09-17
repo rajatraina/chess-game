@@ -13,10 +13,6 @@ from typing import Dict, List, Tuple, Optional, Any
 import json
 import os
 
-try:
-    from .evaluation_cache import EvaluationCache, MaterialOnlyCache
-except ImportError:
-    from evaluation_cache import EvaluationCache, MaterialOnlyCache
 
 import numpy as np
 
@@ -77,14 +73,6 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Store the starting position's piece count for consistent evaluation
         self.starting_piece_count = None
         
-        # Initialize evaluation caches based on config
-        eval_cache_enabled = self.config.get("evaluation_cache_enabled", True)
-        eval_cache_size = self.config.get("evaluation_cache_size", 100000)
-        material_cache_enabled = self.config.get("material_cache_enabled", True)
-        material_cache_size = self.config.get("material_cache_size", 50000)
-        
-        self.evaluation_cache = EvaluationCache(max_size=eval_cache_size) if eval_cache_enabled else None
-        self.material_cache = MaterialOnlyCache(max_size=material_cache_size) if material_cache_enabled else None
     
     def _set_starting_position(self, board: chess.Board):
         """
@@ -369,11 +357,6 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.halfmove_clock >= 100:  # Fifty-move rule
             return self.config["draw_value"]
         
-        # Try to get cached evaluation
-        if self.evaluation_cache is not None:
-            cached_eval = self.evaluation_cache.get(board)
-            if cached_eval is not None:
-                return cached_eval
         
         # Check if this should use endgame evaluation based on starting position
         is_endgame = self._is_endgame_evaluation()
@@ -383,10 +366,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         else:
             evaluation = self._evaluate_middlegame(board)
         
-        # Cache the evaluation
-        if self.evaluation_cache is not None:
-            self.evaluation_cache.put(board, evaluation)
-        
+    
         return evaluation
     
     def evaluate_with_components(self, board: chess.Board) -> dict:
@@ -485,11 +465,6 @@ class HandcraftedEvaluator(BaseEvaluator):
     
     def _evaluate_material(self, board: chess.Board) -> float:
         """Evaluate material balance using optimized bitboard operations with simplification logic"""
-        # Try to get cached material evaluation
-        if self.material_cache is not None:
-            cached_material = self.material_cache.get(board)
-            if cached_material is not None:
-                return cached_material
         
         material_score = 0
         
@@ -538,9 +513,6 @@ class HandcraftedEvaluator(BaseEvaluator):
         #     # Apply simplification to material score
         #     material_score *= simplification_factor
         
-        # Cache the material evaluation
-        if self.material_cache is not None:
-            self.material_cache.put(board, material_score)
         
         return material_score
     

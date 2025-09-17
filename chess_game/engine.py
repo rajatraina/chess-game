@@ -95,10 +95,6 @@ class MinimaxEngine(Engine):
         self.tablebase = None
         self.init_tablebase()
         
-        # Evaluation cache for repeated positions
-        self.eval_cache = {}
-        self.cache_hits = 0
-        self.cache_misses = 0
         
         # Transposition table
         self.transposition_table = {}
@@ -1405,37 +1401,6 @@ class MinimaxEngine(Engine):
         """
         return self.evaluation_manager.evaluate_with_components(board)
     
-    def evaluate_cached(self, board):
-        """
-        Evaluate the current board position with caching for repeated positions.
-        
-        Args:
-            board: Current board state
-            
-        Returns:
-            Evaluation score from White's perspective (rounded to 2 decimal places)
-        """
-        # Use board hash as cache key
-        board_hash = hash(board._transposition_key())
-        
-        if board_hash in self.eval_cache:
-            self.cache_hits += 1
-            return self.eval_cache[board_hash]
-        
-        self.cache_misses += 1
-        evaluation = self.evaluation_manager.evaluate(board)
-        rounded_evaluation = round(evaluation, 2)
-        self.eval_cache[board_hash] = rounded_evaluation
-        
-        # Limit cache size to prevent memory issues
-        cache_size_limit = self.evaluation_manager.evaluator.config.get("cache_size_limit", 10000)
-        if len(self.eval_cache) > cache_size_limit:
-            # Clear cache if it gets too large
-            self.eval_cache.clear()
-            self.cache_hits = 0
-            self.cache_misses = 0
-        
-        return rounded_evaluation
     
     def get_evaluator_info(self):
         """Get information about the current evaluator"""
@@ -1446,17 +1411,6 @@ class MinimaxEngine(Engine):
         self.evaluation_manager.switch_evaluator(evaluator_type, **kwargs)
     
     
-    def get_cache_stats(self):
-        """Get evaluation cache statistics"""
-        total_requests = self.cache_hits + self.cache_misses
-        hit_rate = (self.cache_hits / total_requests * 100) if total_requests > 0 else 0
-        return {
-            'hits': self.cache_hits,
-            'misses': self.cache_misses,
-            'total': total_requests,
-            'hit_rate': hit_rate,
-            'cache_size': len(self.eval_cache)
-        }
 
     def _quiescence(self, board, alpha, beta, depth=0):
         """
