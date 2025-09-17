@@ -18,13 +18,7 @@ try:
 except ImportError:
     from evaluation_cache import EvaluationCache, MaterialOnlyCache
 
-# Optional numpy import for neural network features
-try:
-    import numpy as np
-    NUMPY_AVAILABLE = True
-except ImportError:
-    NUMPY_AVAILABLE = False
-    print("⚠️  NumPy not available. Neural network features will be limited.")
+import numpy as np
 
 
 class BaseEvaluator(ABC):
@@ -994,138 +988,8 @@ class HandcraftedEvaluator(BaseEvaluator):
 
 
 
-class NeuralNetworkEvaluator(BaseEvaluator):
-    """
-    Neural network-based evaluator for future ML integration.
-    
-    This is a placeholder for future neural network evaluation.
-    """
-    
-    def __init__(self, model_path: Optional[str] = None):
-        """
-        Initialize neural network evaluator.
-        
-        Args:
-            model_path: Path to trained neural network model
-        """
-        self.model = None
-        self.model_path = model_path
-        self._load_model()
-    
-    def _load_model(self):
-        """Load the neural network model"""
-        if self.model_path and os.path.exists(self.model_path):
-            try:
-                # TODO: Implement model loading
-                # This is a placeholder for future ML integration
-                print(f"🤖 Loading neural network model from {self.model_path}")
-                # self.model = load_model(self.model_path)
-            except Exception as e:
-                print(f"⚠️  Could not load model {self.model_path}: {e}")
-        else:
-            print("🤖 No neural network model available, using fallback evaluator")
-    
-    def _board_to_features(self, board: chess.Board):
-        """
-        Convert chess board to neural network input features.
-        
-        Args:
-            board: Chess board state
-            
-        Returns:
-            Feature vector for neural network
-        """
-        if not NUMPY_AVAILABLE:
-            print("⚠️  NumPy not available for feature conversion")
-            return None
-        
-        # TODO: Implement board to feature conversion
-        # This is a placeholder for future implementation
-        
-        # Example feature representation:
-        # - Piece positions (12 planes: 6 piece types × 2 colors)
-        # - Side to move (1 plane)
-        # - Castling rights (4 planes)
-        # - En passant square (1 plane)
-        # - Move count (1 plane)
-        
-        features = np.zeros((8, 8, 19), dtype=np.float32)  # 19 feature planes
-        
-        # Piece positions (12 planes)
-        piece_planes = {
-            chess.PAWN: 0,
-            chess.KNIGHT: 2,
-            chess.BISHOP: 4,
-            chess.ROOK: 6,
-            chess.QUEEN: 8,
-            chess.KING: 10
-        }
-        
-        for piece_type in chess.PIECE_TYPES:
-            for color in [chess.WHITE, chess.BLACK]:
-                plane_idx = piece_planes[piece_type] + (0 if color else 1)
-                for square in board.pieces(piece_type, color):
-                    rank, file = chess.square_rank(square), chess.square_file(square)
-                    features[rank, file, plane_idx] = 1.0
-        
-        # Side to move (plane 12)
-        if board.turn:
-            features[:, :, 12] = 1.0
-        
-        # Castling rights (planes 13-16)
-        castling_rights = [chess.BB_A1, chess.BB_H1, chess.BB_A8, chess.BB_H8]
-        for i, right in enumerate(castling_rights):
-            if board.has_castling_rights(right):
-                features[:, :, 13 + i] = 1.0
-        
-        # En passant square (plane 17)
-        if board.ep_square is not None:
-            rank, file = chess.square_rank(board.ep_square), chess.square_file(board.ep_square)
-            features[rank, file, 17] = 1.0
-        
-        # Move count (plane 18)
-        features[:, :, 18] = board.fullmove_number / 100.0  # Normalize
-        
-        return features
-    
-    def evaluate(self, board: chess.Board) -> float:
-        """
-        Evaluate position using neural network.
-        
-        Args:
-            board: Current chess board state
-            
-        Returns:
-            Evaluation score from White's perspective
-        """
-        if self.model is None:
-            # Fallback to handcrafted evaluation
-            fallback = HandcraftedEvaluator()
-            return fallback.evaluate(board)
-        
-        try:
-            # Convert board to features
-            features = self._board_to_features(board)
-            
-            # TODO: Run neural network inference
-            # prediction = self.model.predict(features.reshape(1, 8, 8, 19))
-            # return float(prediction[0])
-            
-            # Placeholder: return handcrafted evaluation
-            fallback = HandcraftedEvaluator()
-            return fallback.evaluate(board)
-            
-        except Exception as e:
-            print(f"⚠️  Neural network evaluation failed: {e}")
-            # Fallback to handcrafted evaluation
-            fallback = HandcraftedEvaluator()
-            return fallback.evaluate(board)
-    
-    def get_name(self) -> str:
-        return "NeuralNetworkEvaluator"
-    
-    def get_description(self) -> str:
-        return "Neural network-based position evaluation"
+# NeuralNetworkEvaluator has been moved to neural_network_evaluator.py
+# Import it only when needed to avoid circular imports
 
 
 class EvaluationManager:
@@ -1151,6 +1015,11 @@ class EvaluationManager:
         if evaluator_type.lower() == "handcrafted":
             return HandcraftedEvaluator(**kwargs)
         elif evaluator_type.lower() == "neural":
+            # Import NeuralNetworkEvaluator only when needed to avoid circular imports
+            try:
+                from .neural_network_evaluator import NeuralNetworkEvaluator
+            except ImportError:
+                from neural_network_evaluator import NeuralNetworkEvaluator
             return NeuralNetworkEvaluator(**kwargs)
         else:
             print(f"⚠️  Unknown evaluator type: {evaluator_type}, using handcrafted")
@@ -1222,6 +1091,11 @@ def create_evaluator(evaluator_type: str = "handcrafted", **kwargs) -> BaseEvalu
     if evaluator_type.lower() == "handcrafted":
         return HandcraftedEvaluator(**kwargs)
     elif evaluator_type.lower() == "neural":
+        # Import NeuralNetworkEvaluator only when needed to avoid circular imports
+        try:
+            from .neural_network_evaluator import NeuralNetworkEvaluator
+        except ImportError:
+            from neural_network_evaluator import NeuralNetworkEvaluator
         return NeuralNetworkEvaluator(**kwargs)
     else:
         raise ValueError(f"Unknown evaluator type: {evaluator_type}")
