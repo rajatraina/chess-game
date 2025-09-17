@@ -1,5 +1,6 @@
 python-chess
 Pillow
 pygame
+numpy
 # syzygy tablebases for endgame support (optional)
 # Download from: https://syzygy-tables.info/ 

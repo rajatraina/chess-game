@@ -163,8 +163,9 @@ class ChessLoggingManager:
                     material = eval_components.get('material', 0)
                     positional = eval_components.get('positional', 0)
                     mobility = eval_components.get('mobility', 0)
-                    overall_eval = material + positional + mobility
-                    self.log(f"📊 Overall: {overall_eval:.1f} (Material: {material:.1f}, Position: {positional:.1f}, Mobility: {mobility:.1f})")
+                    king_safety = eval_components.get('king_safety', 0)
+                    overall_eval = material + positional + mobility + king_safety
+                    self.log(f"📊 Overall: {overall_eval:.1f} (Material: {material:.1f}, Position: {positional:.1f}, Mobility: {mobility:.1f}, King Safety: {king_safety:.1f})")
                     
             except Exception as e:
                 self.log(f"🏆 Best: {best_move.uci()} (SAN error: {e})")

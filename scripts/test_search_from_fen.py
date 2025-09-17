@@ -7,6 +7,7 @@ Usage:
 
 Options:
     --depth N          Maximum search depth (default: 6)
+    --eval-depth N     Search depth for evaluating all legal moves (default: 2)
     --time N           Time budget in seconds (default: unlimited)
     --verbose          Enable detailed move evaluation logging
     --components       Show evaluation component breakdown
@@ -18,6 +19,7 @@ Options:
 Examples:
     python3 scripts/test_search_from_fen.py "r2qkb1r/pp3ppp/2n1bn2/4p1B1/3pN3/1N4P1/PPP1PPBP/R2Q1RK1 b kq - 1 10"
     python3 scripts/test_search_from_fen.py "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1" --verbose --all-moves
+    python3 scripts/test_search_from_fen.py "FEN_STRING" --all-moves --eval-depth 4 --components
     python3 scripts/test_search_from_fen.py "8/8/8/8/8/8/8/8 w - - 0 1" --depth 8 --time 30
 """
 
@@ -32,6 +34,50 @@ from typing import List, Dict, Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'chess_game'))
 
 from engine import MinimaxEngine
+import time
+
+class MoveEvaluationCaptureEngine(MinimaxEngine):
+    """Custom engine that captures move evaluations during search"""
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.move_evaluations = []  # Store move evaluations during search
+        self.capture_evaluations = False
+    
+    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None):
+        """Override minimax to capture move evaluations at root level"""
+        # Only capture evaluations at the root level (depth == self.depth)
+        if self.capture_evaluations and depth == self.depth:
+            return self._minimax_with_capture(board, depth, alpha, beta, variation, start_time, time_budget)
+        else:
+            return super()._minimax(board, depth, alpha, beta, variation, start_time, time_budget)
+    
+    def _minimax_with_capture(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None):
+        """Minimax that captures move evaluations at root level"""
+        # This is a simplified version that captures root move evaluations
+        # We'll use the existing minimax but capture the evaluations
+        
+        # Get all legal moves
+        legal_moves = list(board.legal_moves)
+        self.move_evaluations = []
+        
+        # Evaluate each move with a shallow search
+        for move in legal_moves:
+            board.push(move)
+            # Use a shallow search to get a proper evaluation
+            eval_score, _, _ = super()._minimax(board, depth - 1, -float('inf'), float('inf'), [], start_time, time_budget)
+            board.pop()
+            
+            self.move_evaluations.append((move, eval_score))
+        
+        # Sort by evaluation (best for current player first)
+        if board.turn:  # White to move - higher is better
+            self.move_evaluations.sort(key=lambda x: x[1], reverse=True)
+        else:  # Black to move - lower is better
+            self.move_evaluations.sort(key=lambda x: x[1])
+        
+        # Now run the normal search
+        return super()._minimax(board, depth, alpha, beta, variation, start_time, time_budget)
 
 class FENAnalyzer:
     """Enhanced FEN position analyzer with detailed logging options"""
@@ -42,7 +88,7 @@ class FENAnalyzer:
         self.show_all_moves = show_all_moves
         self.quiet = quiet
         
-    def analyze_position(self, fen: str, depth: int = 6, time_budget: float = None, 
+    def analyze_position(self, fen: str, depth: int = 6, eval_depth: int = 2, time_budget: float = None, 
                         disable_opening_book: bool = False) -> Dict[str, Any]:
         """Analyze a FEN position with comprehensive logging"""
         
@@ -71,7 +117,7 @@ class FENAnalyzer:
             print()
         
         # Create engine with enhanced logging
-        engine = MinimaxEngine(
+        engine = MoveEvaluationCaptureEngine(
             depth=depth,
             evaluator_type="handcrafted",
             quiet=self.quiet
@@ -83,7 +129,7 @@ class FENAnalyzer:
         
         # Show all moves evaluation if requested
         if self.show_all_moves and not self.quiet:
-            self._analyze_all_moves(board, engine)
+            self._analyze_all_moves(board, engine, eval_depth)
         
         # Run the main search
         if not self.quiet:
@@ -122,27 +168,37 @@ class FENAnalyzer:
         
         return results
     
-    def _analyze_all_moves(self, board: chess.Board, engine: MinimaxEngine):
-        """Analyze and display evaluation for all legal moves"""
-        print("📋 Evaluating all legal moves:")
-        print("-" * 60)
+    def _analyze_all_moves(self, board: chess.Board, engine: MoveEvaluationCaptureEngine, eval_depth: int = 2):
+        """Analyze and display evaluation for all legal moves using search"""
+        print(f"📋 Evaluating all legal moves (search evaluation with depth {eval_depth}):")
+        print("-" * 70)
         
+        # Enable evaluation capture
+        engine.capture_evaluations = True
+        
+        # Run a shallow search to capture move evaluations
+        original_depth = engine.depth
+        engine.depth = eval_depth  # Use specified depth for move evaluation
+        
+        # Get move evaluations through search
+        legal_moves = list(board.legal_moves)
         move_evals = []
-        for move in board.legal_moves:
+        
+        for move in legal_moves:
             # Make the move
             board.push(move)
             
-            # Get evaluation
+            # Run a search to get proper evaluation
+            eval_score, _, _ = engine._minimax(board, eval_depth - 1, -float('inf'), float('inf'), [], None, None)
+            
+            # Get components if requested
             if self.show_components and hasattr(engine.evaluation_manager, 'evaluate_with_components'):
                 try:
                     components = engine.evaluation_manager.evaluate_with_components(board)
-                    eval_score = components['total']
                     eval_str = f"{eval_score:.2f} (M:{components['material']:.1f}, P:{components['positional']:.1f}, Mob:{components['mobility']:.1f})"
                 except:
-                    eval_score = engine.evaluation_manager.evaluate(board)
                     eval_str = f"{eval_score:.2f}"
             else:
-                eval_score = engine.evaluation_manager.evaluate(board)
                 eval_str = f"{eval_score:.2f}"
             
             move_evals.append((move, eval_score, eval_str))
@@ -150,19 +206,20 @@ class FENAnalyzer:
             # Undo the move
             board.pop()
         
+        # Restore original depth
+        engine.depth = original_depth
+        engine.capture_evaluations = False
+        
         # Sort by evaluation (best for current player first)
         if board.turn:  # White to move - higher is better
             move_evals.sort(key=lambda x: x[1], reverse=True)
         else:  # Black to move - lower is better
             move_evals.sort(key=lambda x: x[1])
         
-        # Display results
-        for i, (move, eval_score, eval_str) in enumerate(move_evals[:10]):  # Show top 10
+        # Display results - show ALL moves when --all-moves is specified
+        for i, (move, eval_score, eval_str) in enumerate(move_evals):
             move_san = board.san(move)
             print(f"   {i+1:2d}. {move_san:6s} ({move}) = {eval_str}")
-        
-        if len(move_evals) > 10:
-            print(f"   ... and {len(move_evals) - 10} more moves")
         
         print()
     
@@ -176,7 +233,7 @@ class FENAnalyzer:
         print(f"🏆 Best move: {results['best_move_san']} ({results['best_move']})")
         
         # Evaluation
-        if results['evaluation'] != 'unknown':
+        if results['evaluation'] != 'unknown' and results['evaluation'] is not None:
             print(f"📊 Evaluation: {results['evaluation']:.2f}")
         
         # Show evaluation components if available
@@ -231,6 +288,8 @@ def main():
     parser.add_argument("fen", help="FEN string of the position to analyze")
     parser.add_argument("--depth", type=int, default=6, 
                        help="Maximum search depth (default: 6)")
+    parser.add_argument("--eval-depth", type=int, default=2,
+                       help="Search depth for evaluating all legal moves (default: 2)")
     parser.add_argument("--time", type=float, 
                        help="Time budget in seconds (default: unlimited)")
     parser.add_argument("--verbose", action="store_true",
@@ -259,6 +318,7 @@ def main():
         results = analyzer.analyze_position(
             fen=args.fen,
             depth=args.depth,
+            eval_depth=args.eval_depth,
             time_budget=args.time,
             disable_opening_book=args.no_opening_book
         )

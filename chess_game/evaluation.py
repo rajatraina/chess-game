@@ -769,13 +769,13 @@ class HandcraftedEvaluator(BaseEvaluator):
         king_file = chess.square_file(king_square)
         
         # Only count pawn shield when king is on queenside or kingside
-        if king_file <= 2:  # King is on a, b, or c file (queenside)
+        if king_file <= 2:  # King is on a, b, c file (queenside)
             # Use files a, b, c (0, 1, 2)
             shield_files = [0, 1, 2]
-        elif king_file >= 5:  # King is on f, g, or h file (kingside)
+        elif king_file >= 4:  # King is on e, f, g, or h file (kingside)
             # Use files f, g, h (5, 6, 7)
             shield_files = [5, 6, 7]
-        else:  # King is on d or e file (center) - no pawn shield
+        else:  # King is on d file (center) - no pawn shield
             return 0
         
         # Check if each shield file has at least one pawn of our color
@@ -961,12 +961,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         material_score = self._evaluate_material(board)
         positional_score = self._evaluate_positional(board, is_endgame=False)
         mobility_score = self._evaluate_mobility(board)
+        king_safety_score = self._evaluate_king_safety(board)
         
         # Use cached standard weights for performance
         total_score = (
             self.cached_material_weight * material_score +
             self.cached_positional_weight * positional_score +
-            self.cached_mobility_weight * mobility_score
+            self.cached_mobility_weight * mobility_score +
+            self.cached_king_safety_weight * king_safety_score
         )
         
         return total_score
