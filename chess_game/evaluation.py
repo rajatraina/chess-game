@@ -92,7 +92,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         """
         # Use starting position piece count if available, otherwise fall back to current position
         if self.starting_piece_count is not None:
-            return self.starting_piece_count <= 12
+            return self.starting_piece_count <= 16
         else:
             # Fallback for when starting position hasn't been set
             return True  # Conservative fallback
@@ -868,21 +868,6 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         return mobility_score
     
-    def _is_endgame_position(self, board: chess.Board) -> bool:
-        """
-        Determine if the position is an endgame.
-        
-        Args:
-            board: Current chess board state
-            
-        Returns:
-            True if this is an endgame position
-        """
-        # Count total pieces
-        total_pieces = chess.popcount(board.occupied)
-        
-        # Consider it endgame if 12 or fewer pieces
-        return total_pieces <= 12
     
     def _evaluate_endgame(self, board: chess.Board) -> float:
         """

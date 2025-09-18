@@ -24,14 +24,13 @@
     },
     "search_depth": 3,
     "search_depth_starting": 3,
-    "max_search_depth": 5,
-    "search_deepening_time_budget_fraction": 0.3,
-    "search_deepening_min_time_budget": 20.0,
+    "max_search_depth": 7,
+    "search_deepening_time_budget_fraction": 0.4,
+    "search_deepening_min_time_budget": 12.0,
     "time_budget_check_frequency": 1000,
     "time_budget_early_exit_enabled": true,
     "time_budget_safety_margin": 0.1,
     "iterative_deepening_start_move": 5,
-    "endgame_search_depth": 3,
     "piece_values": {
         "pawn": 100,
         "knight": 320,
@@ -69,7 +68,7 @@
         "enabled": true,
         "file_path": "opening_book.txt",
         "max_depth": 20,
-        "eval_threshold": 0.05,
+        "eval_threshold": 0.03,
         "min_games": 1
     },
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."

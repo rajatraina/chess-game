@@ -804,13 +804,6 @@ class MinimaxEngine(Engine):
             max_depth = starting_depth
             self.logger.log_info(f"Limited search mode: max_depth set to {max_depth}")
         
-        # Check if this is an endgame position for deeper search
-        is_endgame = self._is_endgame_position(board)
-        if is_endgame:
-            endgame_depth = self.evaluation_manager.evaluator.config.get("endgame_search_depth", 6)
-            starting_depth = max(starting_depth, endgame_depth)
-            max_depth = max(max_depth, endgame_depth)
-            self.logger.log_info(f"Endgame detected - using depths {starting_depth} to {max_depth}")
         
         # Initialize best move tracking
         best_move = None
@@ -1123,17 +1116,30 @@ class MinimaxEngine(Engine):
                     wdl = self.tablebase.get_wdl(board)
                     if wdl is not None:
                         # Convert WDL to evaluation score
+                        # WDL values are from the perspective of the side to move
                         # WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
-                        if wdl == 2:  # Win
-                            return 100000, [], SearchStatus.COMPLETE
-                        elif wdl == 1:  # Cursed win
-                            return 50000, [], SearchStatus.COMPLETE
-                        elif wdl == 0:  # Draw
-                            return 0, [], SearchStatus.COMPLETE
-                        elif wdl == -1:  # Blessed loss
-                            return -50000, [], SearchStatus.COMPLETE
-                        elif wdl == -2:  # Loss
-                            return -100000, [], SearchStatus.COMPLETE
+                        if board.turn:  # White to move
+                            if wdl == 2:  # White wins
+                                return 100000, [], SearchStatus.COMPLETE
+                            elif wdl == 1:  # White cursed win
+                                return 50000, [], SearchStatus.COMPLETE
+                            elif wdl == 0:  # Draw
+                                return 0, [], SearchStatus.COMPLETE
+                            elif wdl == -1:  # White blessed loss
+                                return -50000, [], SearchStatus.COMPLETE
+                            elif wdl == -2:  # White loses
+                                return -100000, [], SearchStatus.COMPLETE
+                        else:  # Black to move
+                            if wdl == 2:  # Black wins (bad for White)
+                                return -100000, [], SearchStatus.COMPLETE
+                            elif wdl == 1:  # Black cursed win (bad for White)
+                                return -50000, [], SearchStatus.COMPLETE
+                            elif wdl == 0:  # Draw
+                                return 0, [], SearchStatus.COMPLETE
+                            elif wdl == -1:  # Black blessed loss (good for White)
+                                return 50000, [], SearchStatus.COMPLETE
+                            elif wdl == -2:  # Black loses (good for White)
+                                return 100000, [], SearchStatus.COMPLETE
                 except Exception:
                     # Fall back to quiescence if tablebase lookup fails
                     pass
@@ -1742,10 +1748,6 @@ class MinimaxEngine(Engine):
         """Check if position is suitable for tablebase lookup"""
         return chess.popcount(board.occupied) <= 5
     
-    def _is_endgame_position(self, board):
-        """Check if position is an endgame for evaluation purposes"""
-        total_pieces = chess.popcount(board.occupied)
-        return total_pieces <= 12
     
     def get_tablebase_move(self, board):
         """Get the best move from tablebase if available"""
