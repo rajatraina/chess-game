@@ -1,0 +1,74 @@
+{
+  "_comment": "Sample configuration file for chess neural network training",
+  "_description": "This config uses the 'medium' preset with all default values filled in",
+  
+  "model": {
+    "_comment": "Neural network architecture parameters",
+    "d_model": 256,
+    "_d_model_comment": "Model dimension (embedding size) - should be power of 2",
+    "nhead": 8,
+    "_nhead_comment": "Number of attention heads - must divide d_model",
+    "num_layers": 6,
+    "_num_layers_comment": "Number of transformer encoder layers",
+    "dim_feedforward": 1024,
+    "_dim_feedforward_comment": "Feedforward network dimension",
+    "dropout": 0.1,
+    "_dropout_comment": "Dropout rate (0.0 to 1.0)",
+    "input_channels": 18,
+    "_input_channels_comment": "Number of input feature planes (8x8x18 board representation)"
+  },
+  
+  "training": {
+    "_comment": "Training hyperparameters",
+    "batch_size": 32,
+    "_batch_size_comment": "Training batch size",
+    "learning_rate": 0.0001,
+    "_learning_rate_comment": "Initial learning rate",
+    "weight_decay": 1e-05,
+    "_weight_decay_comment": "L2 regularization strength",
+    "num_epochs": 50,
+    "_num_epochs_comment": "Maximum number of training epochs",
+    "val_split": 0.1,
+    "_val_split_comment": "Fraction of data to use for validation (0.0 to 1.0)",
+    "save_every": 10,
+    "_save_every_comment": "Save checkpoint every N epochs",
+    "early_stopping_patience": 10,
+    "_early_stopping_patience_comment": "Stop training if no improvement for N epochs",
+    "optimizer": "adamw",
+    "_optimizer_comment": "Optimizer type: 'adam', 'adamw', or 'sgd'",
+    "betas": [0.9, 0.999],
+    "_betas_comment": "Beta parameters for Adam optimizer",
+    "gradient_clip_norm": 1.0,
+    "_gradient_clip_norm_comment": "Maximum gradient norm for clipping"
+  },
+  
+  "data": {
+    "_comment": "Data loading parameters",
+    "num_workers": 4,
+    "_num_workers_comment": "Number of worker processes for data loading",
+    "pin_memory": true,
+    "_pin_memory_comment": "Pin memory for faster GPU transfer",
+    "max_positions": 100000,
+    "_max_positions_comment": "Maximum number of positions to load (null for all)",
+    "shuffle": true,
+    "_shuffle_comment": "Whether to shuffle training data"
+  },
+  
+  "hardware": {
+    "_comment": "Hardware configuration",
+    "device": "auto",
+    "_device_comment": "Device to use: 'auto', 'cpu', 'cuda', or 'mps'",
+    "mixed_precision": false,
+    "_mixed_precision_comment": "Use mixed precision training (requires GPU)"
+  },
+  
+  "paths": {
+    "_comment": "File paths (set these when using the config)",
+    "data_file": null,
+    "_data_file_comment": "Path to training data file (.zst format)",
+    "save_dir": "checkpoints",
+    "_save_dir_comment": "Directory to save model checkpoints",
+    "log_dir": "logs",
+    "_log_dir_comment": "Directory to save training logs"
+  }
+}

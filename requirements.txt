@@ -2,5 +2,7 @@ python-chess
 Pillow
 pygame
 numpy
+torch
+zstandard
 # syzygy tablebases for endgame support (optional)
 # Download from: https://syzygy-tables.info/ 
