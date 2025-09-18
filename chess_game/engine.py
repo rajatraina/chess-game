@@ -267,7 +267,7 @@ class MinimaxEngine(Engine):
             if repetition_after_move:
                 repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
                 # Check current position evaluation to determine if we're winning/losing
-                current_eval = self.evaluate_cached(board)
+                current_eval = self.evaluate(board)
                 # If we're winning and this move leads to repetition, heavily penalize it
                 # If we're losing and this move leads to repetition, prefer it
                 if board.turn:  # White to move
@@ -337,7 +337,7 @@ class MinimaxEngine(Engine):
         
         # Evaluate current position (stand pat) - only if not in check
         if not is_in_check:
-            stand_pat = self.evaluate_cached(board)
+            stand_pat = self.evaluate(board)
             
             # Alpha-beta pruning at quiescence level
             if board.turn:  # White to move: maximize
@@ -363,7 +363,7 @@ class MinimaxEngine(Engine):
                 return -100000 if board.turn else 100000, [], SearchStatus.COMPLETE
             else:
                 # If not in check and no captures/checks, return stand pat
-                stand_pat = self.evaluate_cached(board)
+                stand_pat = self.evaluate(board)
                 return stand_pat, [], SearchStatus.COMPLETE
         
         best_line = []
@@ -1231,7 +1231,7 @@ class MinimaxEngine(Engine):
                 if repetition_after_move:
                     repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
                     # Check current position evaluation to determine if we're winning/losing
-                    current_eval = self.evaluate_cached(board)
+                    current_eval = self.evaluate(board)
                     # If we're winning and this move leads to repetition, heavily penalize it
                     # If we're losing and this move leads to repetition, prefer it
                     if current_eval > 50:  # White is winning significantly
@@ -1333,7 +1333,7 @@ class MinimaxEngine(Engine):
                 if repetition_after_move:
                     repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
                     # Check current position evaluation to determine if we're winning/losing
-                    current_eval = self.evaluate_cached(board)
+                    current_eval = self.evaluate(board)
                     # If we're winning and this move leads to repetition, heavily penalize it
                     # If we're losing and this move leads to repetition, prefer it
                     if current_eval < -50:  # Black is winning significantly
@@ -1495,7 +1495,7 @@ class MinimaxEngine(Engine):
         
         # Evaluate current position (stand pat) - only if not in check
         if not is_in_check:
-            stand_pat = self.evaluate_cached(board)
+            stand_pat = self.evaluate(board)
             
             # Alpha-beta pruning at quiescence level
             if board.turn:  # White to move: maximize
@@ -1520,7 +1520,7 @@ class MinimaxEngine(Engine):
                 return -100000 if board.turn else 100000, [], SearchStatus.COMPLETE
             else:
                 # If not in check and no captures/checks, return stand pat
-                stand_pat = self.evaluate_cached(board)
+                stand_pat = self.evaluate(board)
                 return stand_pat, [], SearchStatus.COMPLETE
         
         best_line = []
