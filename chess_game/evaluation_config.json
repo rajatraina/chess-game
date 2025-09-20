@@ -41,7 +41,7 @@
     "total_piece_values": 8180,
     "simplification_material_diff_threshold": 1200,
     "simplification_material_diff_multiplier": 0.00001,
-    "time_management_moves_remaining": 15,
+    "time_management_moves_remaining": 25,
     "time_management_increment_used": 0.8,
     "checkmate_bonus": 100000,
     "draw_value": 0,
