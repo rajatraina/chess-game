@@ -271,14 +271,14 @@ class MinimaxEngine(Engine):
                 # If we're winning and this move leads to repetition, heavily penalize it
                 # If we're losing and this move leads to repetition, prefer it
                 if board.turn:  # White to move
-                    if current_eval > 50:  # White is winning significantly
+                    if current_eval > 20:  # White is winning significantly
                         value = -1000  # Heavy penalty for throwing away winning position
-                    elif current_eval < -50:  # White is losing significantly
+                    elif current_eval < -20:  # White is losing significantly
                         value = repetition_eval  # Prefer draw over losing
                 else:  # Black to move
-                    if current_eval < -50:  # Black is winning significantly
+                    if current_eval < -20:  # Black is winning significantly
                         value = 1000  # Heavy penalty for throwing away winning position
-                    elif current_eval > 50:  # Black is losing significantly
+                    elif current_eval > 20:  # Black is losing significantly
                         value = repetition_eval  # Prefer draw over losing
             
             # Update best move based on whose turn it is
@@ -1240,9 +1240,9 @@ class MinimaxEngine(Engine):
                     current_eval = self.evaluate(board)
                     # If we're winning and this move leads to repetition, heavily penalize it
                     # If we're losing and this move leads to repetition, prefer it
-                    if current_eval > 50:  # White is winning significantly
+                    if current_eval > 20:  # White is winning significantly
                         eval = -1000  # Heavy penalty for throwing away winning position
-                    elif current_eval < -50:  # White is losing significantly
+                    elif current_eval < -20:  # White is losing significantly
                         eval = repetition_eval  # Prefer draw over losing
                 
 
@@ -1342,9 +1342,9 @@ class MinimaxEngine(Engine):
                     current_eval = self.evaluate(board)
                     # If we're winning and this move leads to repetition, heavily penalize it
                     # If we're losing and this move leads to repetition, prefer it
-                    if current_eval < -50:  # Black is winning significantly
+                    if current_eval < -20:  # Black is winning significantly
                         eval = 1000  # Heavy penalty for throwing away winning position
-                    elif current_eval > 50:  # Black is losing significantly
+                    elif current_eval > 20:  # Black is losing significantly
                         eval = repetition_eval  # Prefer draw over losing
                 
                 # Update best move if this is better
