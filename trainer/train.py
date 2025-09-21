@@ -18,6 +18,7 @@ from .config import TrainingConfig, ConfigPresets, ConfigValidator
 from .transformer_model import create_model
 from .trainer import ChessTrainer
 from .data_loader import ChessDataLoader
+from .streaming_data_loader_v2 import StreamingChessDataLoader
 
 
 def main():
@@ -121,6 +122,19 @@ def main():
         help='Enable verbose output'
     )
     
+    parser.add_argument(
+        '--streaming',
+        action='store_true',
+        help='Use streaming data loader (memory efficient)'
+    )
+    
+    parser.add_argument(
+        '--buffer-size',
+        type=int,
+        default=10000,
+        help='Buffer size for streaming data loader'
+    )
+    
     args = parser.parse_args()
     
     # Create configuration
@@ -220,13 +234,34 @@ def main():
     print("Creating data loaders...")
     data_config = config.get('data')
     
-    train_loader, val_loader = ChessDataLoader.create_train_val_loaders(
-        data_file=data_file,
-        batch_size=training_config.get('batch_size'),
-        val_split=training_config.get('val_split'),
-        num_workers=data_config.get('num_workers'),
-        max_positions=data_config.get('max_positions')
-    )
+    # Check if streaming mode is enabled (from args or config)
+    use_streaming = args.streaming or data_config.get('streaming', False)
+    
+    if use_streaming:
+        print("Using streaming data loader (memory efficient)")
+        # For streaming, we must use num_workers=0
+        if data_config.get('num_workers', 0) > 0:
+            print("Warning: Setting num_workers to 0 for streaming mode")
+            data_config['num_workers'] = 0
+        
+        buffer_size = args.buffer_size or data_config.get('buffer_size', 10000)
+        train_loader, val_loader = StreamingChessDataLoader.create_train_val_loaders(
+            data_file=data_file,
+            batch_size=training_config.get('batch_size'),
+            val_split=training_config.get('val_split'),
+            num_workers=0,  # Must be 0 for streaming
+            max_positions=data_config.get('max_positions'),
+            buffer_size=buffer_size
+        )
+    else:
+        print("Using standard data loader (loads all data into memory)")
+        train_loader, val_loader = ChessDataLoader.create_train_val_loaders(
+            data_file=data_file,
+            batch_size=training_config.get('batch_size'),
+            val_split=training_config.get('val_split'),
+            num_workers=data_config.get('num_workers'),
+            max_positions=data_config.get('max_positions')
+        )
     
     print(f"Training batches: {len(train_loader)}")
     print(f"Validation batches: {len(val_loader)}")

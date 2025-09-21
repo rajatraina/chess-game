@@ -1802,26 +1802,44 @@ class MinimaxEngine(Engine):
                         
                         if not board.turn:  # White just moved, so Black is to move next
                             # We want to find the best move for White
-                            # The WDL value represents what Black can achieve after White's move
+                            # After White's move, Black is to move, so WDL/DTZ are from Black's perspective
                             # White wants to minimize Black's best result (minimize WDL from Black's perspective)
-                            # Among moves with the same WDL, choose the one with highest DTZ (closest to 0 = fastest win for White)
-                            if (best_wdl is None or 
-                                move_wdl < best_wdl or 
-                                (move_wdl == best_wdl and move_dtz is not None and 
-                                 (best_dtz is None or move_dtz > best_dtz))):
+                            # Among moves with the same WDL, choose the one with largest value of DTZ
+                            is_better_move = False
+                            if best_wdl is None:
+                                is_better_move = True
+                            elif move_wdl < best_wdl:
+                                is_better_move = True
+                            elif move_wdl == best_wdl and move_dtz is not None:
+                                if best_dtz is None:
+                                    is_better_move = True
+                                else:
+                                    # Among moves with same WDL, prefer largest value of DTZ
+                                    is_better_move = move_dtz > best_dtz
+                            
+                            if is_better_move:
                                 best_wdl = move_wdl
                                 best_dtz = move_dtz
                                 best_move = move
                                 print(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - White's best move")
                         else:  # Black just moved, so White is to move next
                             # We want to find the best move for Black
-                            # The WDL value represents what White can achieve after Black's move
+                            # After Black's move, White is to move, so WDL/DTZ are from White's perspective
                             # Black wants to minimize White's best result (minimize WDL from White's perspective)
-                            # Among moves with the same WDL, choose the one with highest DTZ (slowest win for White)
-                            if (best_wdl is None or 
-                                move_wdl < best_wdl or 
-                                (move_wdl == best_wdl and move_dtz is not None and 
-                                 (best_dtz is None or move_dtz > best_dtz))):
+                            # Among moves with the same WDL, choose the one with largest value of DTZ
+                            is_better_move = False
+                            if best_wdl is None:
+                                is_better_move = True
+                            elif move_wdl < best_wdl:
+                                is_better_move = True
+                            elif move_wdl == best_wdl and move_dtz is not None:
+                                if best_dtz is None:
+                                    is_better_move = True
+                                else:
+                                    # Among moves with same WDL, prefer largest value of DTZ
+                                    is_better_move = move_dtz > best_dtz
+                            
+                            if is_better_move:
                                 best_wdl = move_wdl
                                 best_dtz = move_dtz
                                 best_move = move
