@@ -1754,25 +1754,25 @@ class MinimaxEngine(Engine):
         try:
             if not self.tablebase:
                 if not self.quiet:
-                    print("⚠️  No tablebase available")
+                    self.logger.log("⚠️  No tablebase available")
                 return None
             
             # Get tablebase information for current position
             wdl = self.tablebase.get_wdl(board)
             if wdl is None:
                 if not self.quiet:
-                    print("⚠️  Position not found in tablebase")
+                    self.logger.log("⚠️  Position not found in tablebase")
                 return None
             
             # WDL values: 2 = win, 1 = cursed win, 0 = draw, -1 = blessed loss, -2 = loss
             wdl_names = {2: "Win", 1: "Cursed Win", 0: "Draw", -1: "Blessed Loss", -2: "Loss"}
             if not self.quiet:
-                print(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
+                self.logger.log(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
             
             # Get DTZ for current position to understand the fastest path
             dtz = self.tablebase.get_dtz(board)
             if dtz is not None and not self.quiet:
-                print(f"📊 Tablebase: DTZ={dtz} (Distance To Zero)")
+                self.logger.log(f"📊 Tablebase: DTZ={dtz} (Distance To Zero)")
             
             # Find the best move by trying each legal move
             best_move = None
@@ -1780,7 +1780,7 @@ class MinimaxEngine(Engine):
             best_dtz = None
             
             if not self.quiet:
-                print(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
+                self.logger.log(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
             
             moves_checked = 0
             for move in board.legal_moves:
@@ -1821,7 +1821,7 @@ class MinimaxEngine(Engine):
                                 best_wdl = move_wdl
                                 best_dtz = move_dtz
                                 best_move = move
-                                print(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - White's best move")
+                                self.logger.log(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - White's best move")
                         else:  # Black just moved, so White is to move next
                             # We want to find the best move for Black
                             # After Black's move, White is to move, so WDL/DTZ are from White's perspective
@@ -1843,31 +1843,31 @@ class MinimaxEngine(Engine):
                                 best_wdl = move_wdl
                                 best_dtz = move_dtz
                                 best_move = move
-                                print(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - Black's best move")
+                                self.logger.log(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - Black's best move")
                     else:
-                        print(f"  ❌ {move_san}: Not found in tablebase")
+                        self.logger.log(f"  ❌ {move_san}: Not found in tablebase")
                 except Exception as e:
                     if not self.quiet:
-                        print(f"⚠️  Error checking move {move_san}: {e}")
+                        self.logger.log(f"⚠️  Error checking move {move_san}: {e}")
                 board.pop()
             
             if not self.quiet:
-                print(f"📊 Checked {moves_checked} moves in tablebase")
+                self.logger.log(f"📊 Checked {moves_checked} moves in tablebase")
             
             if best_move:
                 best_move_san = board.san(best_move)
                 side_to_move = "White" if board.turn else "Black"
                 if not self.quiet:
-                    print(f"🎯 Tablebase best move for {side_to_move}: {best_move_san} (WDL={best_wdl} - {wdl_names.get(best_wdl, 'Unknown')}, DTZ={best_dtz})")
+                    self.logger.log(f"🎯 Tablebase best move for {side_to_move}: {best_move_san} (WDL={best_wdl} - {wdl_names.get(best_wdl, 'Unknown')}, DTZ={best_dtz})")
             else:
                 if not self.quiet:
-                    print("⚠️  No best move found in tablebase")
+                    self.logger.log("⚠️  No best move found in tablebase")
             
             return best_move
             
         except Exception as e:
             if not self.quiet:
-                print(f"⚠️  Tablebase error: {e}")
+                self.logger.log(f"⚠️  Tablebase error: {e}")
             return None 
     def _get_quiescence_moves(self, board):
         """
