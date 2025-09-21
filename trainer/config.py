@@ -6,6 +6,7 @@ including model architecture, training parameters, and data loading settings.
 """
 
 import json
+import yaml
 import os
 from typing import Dict, Any, Optional
 from pathlib import Path
@@ -112,15 +113,23 @@ class TrainingConfig:
         config[keys[-1]] = value
     
     def save(self, filepath: str):
-        """Save configuration to JSON file."""
+        """Save configuration to file (JSON or YAML based on extension)."""
+        filepath = Path(filepath)
         with open(filepath, 'w') as f:
-            json.dump(self.config, f, indent=2)
+            if filepath.suffix.lower() in ['.yaml', '.yml']:
+                yaml.dump(self.config, f, default_flow_style=False, indent=2)
+            else:
+                json.dump(self.config, f, indent=2)
     
     @classmethod
     def load(cls, filepath: str) -> 'TrainingConfig':
-        """Load configuration from JSON file."""
+        """Load configuration from file (JSON or YAML based on extension)."""
+        filepath = Path(filepath)
         with open(filepath, 'r') as f:
-            config_dict = json.load(f)
+            if filepath.suffix.lower() in ['.yaml', '.yml']:
+                config_dict = yaml.safe_load(f)
+            else:
+                config_dict = json.load(f)
         return cls(config_dict)
     
     def to_dict(self) -> Dict[str, Any]:

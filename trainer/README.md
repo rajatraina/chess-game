@@ -136,7 +136,7 @@ Create a JSON configuration file:
 Then use it:
 
 ```bash
-python -m trainer.train --data-file data.jsonl.zst --config my_config.json
+python -m trainer.train --data-file data.jsonl.zst --config my_config.yaml
 ```
 
 ## Model Integration

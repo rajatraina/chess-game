@@ -18,7 +18,6 @@ from .config import TrainingConfig, ConfigPresets, ConfigValidator
 from .transformer_model import create_model
 from .trainer import ChessTrainer
 from .data_loader import ChessDataLoader
-from .streaming_data_loader_v2 import StreamingChessDataLoader
 
 
 def main():
@@ -123,16 +122,16 @@ def main():
     )
     
     parser.add_argument(
-        '--streaming',
-        action='store_true',
-        help='Use streaming data loader (memory efficient)'
-    )
-    
-    parser.add_argument(
         '--buffer-size',
         type=int,
         default=10000,
-        help='Buffer size for streaming data loader'
+        help='Buffer size for data loader'
+    )
+    
+    parser.add_argument(
+        '--checkpoint-every-batches',
+        type=int,
+        help='Save checkpoint and run validation every N batches'
     )
     
     args = parser.parse_args()
@@ -174,6 +173,9 @@ def main():
     
     if args.num_workers:
         config.set('data.num_workers', args.num_workers)
+    
+    if args.checkpoint_every_batches:
+        config.set('training.checkpoint_every_batches', args.checkpoint_every_batches)
     
     # Validate configuration
     print("Validating configuration...")
@@ -234,34 +236,20 @@ def main():
     print("Creating data loaders...")
     data_config = config.get('data')
     
-    # Check if streaming mode is enabled (from args or config)
-    use_streaming = args.streaming or data_config.get('streaming', False)
+    # For streaming data loader, we must use num_workers=0
+    if data_config.get('num_workers', 0) > 0:
+        print("Warning: Setting num_workers to 0 for streaming data loader")
+        data_config['num_workers'] = 0
     
-    if use_streaming:
-        print("Using streaming data loader (memory efficient)")
-        # For streaming, we must use num_workers=0
-        if data_config.get('num_workers', 0) > 0:
-            print("Warning: Setting num_workers to 0 for streaming mode")
-            data_config['num_workers'] = 0
-        
-        buffer_size = args.buffer_size or data_config.get('buffer_size', 10000)
-        train_loader, val_loader = StreamingChessDataLoader.create_train_val_loaders(
-            data_file=data_file,
-            batch_size=training_config.get('batch_size'),
-            val_split=training_config.get('val_split'),
-            num_workers=0,  # Must be 0 for streaming
-            max_positions=data_config.get('max_positions'),
-            buffer_size=buffer_size
-        )
-    else:
-        print("Using standard data loader (loads all data into memory)")
-        train_loader, val_loader = ChessDataLoader.create_train_val_loaders(
-            data_file=data_file,
-            batch_size=training_config.get('batch_size'),
-            val_split=training_config.get('val_split'),
-            num_workers=data_config.get('num_workers'),
-            max_positions=data_config.get('max_positions')
-        )
+    buffer_size = args.buffer_size or data_config.get('buffer_size', 10000)
+    train_loader, val_loader = ChessDataLoader.create_train_val_loaders(
+        data_file=data_file,
+        batch_size=training_config.get('batch_size'),
+        val_split=training_config.get('val_split'),
+        num_workers=0,  # Must be 0 for streaming
+        max_positions=data_config.get('max_positions'),
+        buffer_size=buffer_size
+    )
     
     print(f"Training batches: {len(train_loader)}")
     print(f"Validation batches: {len(val_loader)}")
@@ -284,7 +272,8 @@ def main():
         val_loader=val_loader,
         num_epochs=training_config.get('num_epochs'),
         save_every=training_config.get('save_every'),
-        early_stopping_patience=training_config.get('early_stopping_patience')
+        early_stopping_patience=training_config.get('early_stopping_patience'),
+        checkpoint_every_batches=training_config.get('checkpoint_every_batches')
     )
     
     # Save final model

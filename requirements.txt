@@ -4,5 +4,6 @@ pygame
 numpy
 torch
 zstandard
+pyyaml
 # syzygy tablebases for endgame support (optional)
 # Download from: https://syzygy-tables.info/ 

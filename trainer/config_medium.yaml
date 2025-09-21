@@ -1,0 +1,44 @@
+# Main configuration file for chess neural network training
+# Optimized configuration for large-scale training with 1M positions, includes all features
+
+model:
+  # Neural network architecture parameters
+  d_model: 256  # Model dimension (embedding size) - should be power of 2
+  nhead: 8      # Number of attention heads - must divide d_model
+  num_layers: 6 # Number of transformer encoder layers
+  dim_feedforward: 1024 # Feedforward network dimension
+  dropout: 0.1  # Dropout rate (0.0 to 1.0)
+  input_channels: 18 # Number of input feature planes (8x8x18 board representation)
+
+training:
+  # Training hyperparameters
+  batch_size: 64                    # Training batch size (increased for better performance)
+  learning_rate: 0.0001             # Initial learning rate
+  weight_decay: 0.00001             # L2 regularization strength
+  num_epochs: 100                   # Maximum number of training epochs (increased for longer training)
+  val_split: 0.1                    # Fraction of data to use for validation (0.0 to 1.0)
+  save_every: 5                     # Save checkpoint every N epochs (more frequent saves)
+  checkpoint_every_batches: 1000    # Save checkpoint and run validation every N batches
+  early_stopping_patience: 15      # Stop training if no improvement for N epochs (increased patience)
+  optimizer: "adamw"               # Optimizer type: 'adam', 'adamw', or 'sgd'
+  betas: [0.9, 0.999]              # Beta parameters for Adam optimizer
+  gradient_clip_norm: 1.0          # Maximum gradient norm for clipping
+
+data:
+  # Data loading parameters
+  num_workers: 0                    # Number of worker processes for data loading (must be 0 for streaming)
+  pin_memory: true                  # Pin memory for faster GPU transfer
+  max_positions: 1000000            # Maximum number of positions to load (1M for large-scale training)
+  shuffle: true                     # Whether to shuffle training data
+  buffer_size: 10000               # Buffer size for streaming data loader
+
+hardware:
+  # Hardware configuration
+  device: "auto"                    # Device to use: 'auto', 'cpu', 'cuda', or 'mps'
+  mixed_precision: false            # Use mixed precision training (requires GPU)
+
+paths:
+  # File paths (set these when using the config)
+  data_file: "trainer/localdata/lichess_db_eval.jsonl.zst" # Path to training data file (.zst format)
+  save_dir: "checkpoints"           # Directory to save model checkpoints
+  log_dir: "logs"                   # Directory to save training logs

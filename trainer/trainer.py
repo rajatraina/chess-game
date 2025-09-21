@@ -126,12 +126,15 @@ class ChessTrainer:
         
         print(f"Setup {optimizer_type} optimizer with lr={learning_rate}")
     
-    def train_epoch(self, train_loader: DataLoader) -> float:
+    def train_epoch(self, train_loader: DataLoader, val_loader: DataLoader = None, 
+                   checkpoint_every_batches: int = None) -> float:
         """
         Train the model for one epoch.
         
         Args:
             train_loader: Training data loader
+            val_loader: Validation data loader for batch checkpoints
+            checkpoint_every_batches: Run validation and save checkpoint every N batches
             
         Returns:
             Average training loss for the epoch
@@ -139,6 +142,7 @@ class ChessTrainer:
         self.model.train()
         total_loss = 0.0
         num_batches = 0
+        global_batch_count = 0  # Track total batches across all epochs
         
         if len(train_loader) == 0:
             print("Warning: No training batches available")
@@ -168,11 +172,18 @@ class ChessTrainer:
             # Accumulate loss
             total_loss += loss.item()
             num_batches += 1
+            global_batch_count += 1
             
             # Print progress
             if batch_idx % 100 == 0:
                 print(f'Epoch {self.epoch}, Batch {batch_idx}/{len(train_loader)}, '
                       f'Loss: {loss.item():.6f}')
+            
+            # Batch-level checkpointing
+            if (checkpoint_every_batches and 
+                global_batch_count % checkpoint_every_batches == 0 and 
+                val_loader is not None):
+                self._batch_checkpoint(global_batch_count, val_loader)
         
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
         return avg_loss
@@ -205,15 +216,51 @@ class ChessTrainer:
                 total_loss += loss.item()
                 num_batches += 1
         
-        avg_loss = total_loss / num_batches
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
         return avg_loss
+    
+    def _batch_checkpoint(self, global_batch_count: int, val_loader: DataLoader):
+        """
+        Perform batch-level checkpointing with validation and stats.
+        
+        Args:
+            global_batch_count: Total number of batches processed so far
+            val_loader: Validation data loader
+        """
+        print(f"\n🔄 Batch Checkpoint at {global_batch_count} batches:")
+        
+        # Run validation
+        val_loss = self.validate(val_loader)
+        
+        # Get current learning rate
+        current_lr = self.optimizer.param_groups[0]['lr']
+        
+        # Print stats
+        print(f"  📊 Validation Loss: {val_loss:.6f}")
+        print(f"  📈 Learning Rate: {current_lr:.2e}")
+        print(f"  🏆 Best Val Loss: {self.best_val_loss:.6f}")
+        
+        # Save best model if validation improved
+        if val_loss < self.best_val_loss:
+            self.best_val_loss = val_loss
+            self.save_checkpoint('best_model.pth', self.epoch, val_loss)
+            print(f"  ✅ New best model saved! (val_loss: {val_loss:.6f})")
+        else:
+            print(f"  📝 No improvement (current: {val_loss:.6f}, best: {self.best_val_loss:.6f})")
+        
+        # Save regular checkpoint
+        checkpoint_name = f'checkpoint_batch_{global_batch_count}.pth'
+        self.save_checkpoint(checkpoint_name, self.epoch, val_loss)
+        print(f"  💾 Checkpoint saved: {checkpoint_name}")
+        print()  # Empty line for readability
     
     def train(self, 
               train_loader: DataLoader,
               val_loader: DataLoader,
               num_epochs: int = 100,
               save_every: int = 10,
-              early_stopping_patience: int = 10) -> Dict[str, List[float]]:
+              early_stopping_patience: int = 10,
+              checkpoint_every_batches: int = None) -> Dict[str, List[float]]:
         """
         Train the model for multiple epochs.
         
@@ -223,6 +270,7 @@ class ChessTrainer:
             num_epochs: Number of epochs to train
             save_every: Save model every N epochs
             early_stopping_patience: Stop training if no improvement for N epochs
+            checkpoint_every_batches: Run validation and save checkpoint every N batches
             
         Returns:
             Training history dictionary
@@ -238,7 +286,7 @@ class ChessTrainer:
             
             # Training
             start_time = time.time()
-            train_loss = self.train_epoch(train_loader)
+            train_loss = self.train_epoch(train_loader, val_loader, checkpoint_every_batches)
             train_time = time.time() - start_time
             
             # Validation
