@@ -122,10 +122,10 @@ def main():
     )
     
     parser.add_argument(
-        '--buffer-size',
+        '--buffer-batches',
         type=int,
-        default=10000,
-        help='Buffer size for data loader'
+        default=20,
+        help='Number of batches to read in one go (buffer_size = batch_size × buffer_batches)'
     )
     
     parser.add_argument(
@@ -201,7 +201,7 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     
     # Save configuration
-    config_path = os.path.join(save_dir, 'config.json')
+    config_path = os.path.join(save_dir, 'config.yaml')
     config.save(config_path)
     print(f"Configuration saved to: {config_path}")
     
@@ -241,14 +241,21 @@ def main():
         print("Warning: Setting num_workers to 0 for streaming data loader")
         data_config['num_workers'] = 0
     
-    buffer_size = args.buffer_size or data_config.get('buffer_size', 10000)
-    train_loader, val_loader = ChessDataLoader.create_train_val_loaders(
-        data_file=data_file,
+    buffer_batches = args.buffer_batches or data_config.get('buffer_batches', 20)
+    train_file = data_config.get('train_file')
+    val_file = data_config.get('val_file')
+    
+    if not train_file or not val_file:
+        raise ValueError("Both train_file and val_file must be specified in config")
+    
+    train_loader, val_loader = ChessDataLoader.create_separate_loaders(
+        train_file=train_file,
+        val_file=val_file,
         batch_size=training_config.get('batch_size'),
-        val_split=training_config.get('val_split'),
         num_workers=0,  # Must be 0 for streaming
         max_positions=data_config.get('max_positions'),
-        buffer_size=buffer_size
+        buffer_batches=buffer_batches,
+        cp_to_prob_scale=data_config.get('cp_to_prob_scale', 400.0)
     )
     
     print(f"Training batches: {len(train_loader)}")
@@ -273,7 +280,8 @@ def main():
         num_epochs=training_config.get('num_epochs'),
         save_every=training_config.get('save_every'),
         early_stopping_patience=training_config.get('early_stopping_patience'),
-        checkpoint_every_batches=training_config.get('checkpoint_every_batches')
+        checkpoint_every_batches=training_config.get('checkpoint_every_batches'),
+        print_every_batches=training_config.get('print_every_batches', 100)
     )
     
     # Save final model

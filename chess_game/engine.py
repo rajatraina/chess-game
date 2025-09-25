@@ -1765,6 +1765,7 @@ class MinimaxEngine(Engine):
                 return None
             
             # WDL values: 2 = win, 1 = cursed win, 0 = draw, -1 = blessed loss, -2 = loss
+            # NOTE: The WDL value is from the perspective of side that will move next (after this move)
             wdl_names = {2: "Win", 1: "Cursed Win", 0: "Draw", -1: "Blessed Loss", -2: "Loss"}
             if not self.quiet:
                 self.logger.log(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
@@ -1775,9 +1776,8 @@ class MinimaxEngine(Engine):
                 self.logger.log(f"📊 Tablebase: DTZ={dtz} (Distance To Zero)")
             
             # Find the best move by trying each legal move
-            best_move = None
-            best_wdl = None
-            best_dtz = None
+            # We'll collect all moves with their WDL/DTZ values and then apply our selection logic
+            move_candidates = []
             
             if not self.quiet:
                 self.logger.log(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
@@ -1787,6 +1787,10 @@ class MinimaxEngine(Engine):
                 # Get SAN notation before pushing the move
                 move_san = board.san(move)
                 
+                # Check if this is a pawn move or capture before making the move
+                is_pawn_move = board.piece_type_at(move.from_square) == chess.PAWN
+                is_capture = board.is_capture(move)
+                
                 board.push(move)
                 try:
                     move_wdl = self.tablebase.get_wdl(board)
@@ -1794,62 +1798,52 @@ class MinimaxEngine(Engine):
                     moves_checked += 1
                     
                     if move_wdl is not None:
-                        # The WDL value is from the perspective of the side that will move next (after this move)
-                        # We need to find the best move for the side that is about to move
                         
-                        # When White is to move (board.turn was True), after making a move, board.turn becomes False (Black to move)
-                        # When Black is to move (board.turn was False), after making a move, board.turn becomes True (White to move)
+                        move_candidates.append({
+                            'move': move,
+                            'san': move_san,
+                            'wdl': move_wdl,
+                            'dtz': move_dtz,
+                            'is_pawn_move': is_pawn_move,
+                            'is_capture': is_capture
+                        })
                         
-                        if not board.turn:  # White just moved, so Black is to move next
-                            # We want to find the best move for White
-                            # After White's move, Black is to move, so WDL/DTZ are from Black's perspective
-                            # White wants to minimize Black's best result (minimize WDL from Black's perspective)
-                            # Among moves with the same WDL, choose the one with largest value of DTZ
-                            is_better_move = False
-                            if best_wdl is None:
-                                is_better_move = True
-                            elif move_wdl < best_wdl:
-                                is_better_move = True
-                            elif move_wdl == best_wdl and move_dtz is not None:
-                                if best_dtz is None:
-                                    is_better_move = True
-                                else:
-                                    # Among moves with same WDL, prefer largest value of DTZ
-                                    is_better_move = move_dtz > best_dtz
-                            
-                            if is_better_move:
-                                best_wdl = move_wdl
-                                best_dtz = move_dtz
-                                best_move = move
-                                self.logger.log(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - White's best move")
-                        else:  # Black just moved, so White is to move next
-                            # We want to find the best move for Black
-                            # After Black's move, White is to move, so WDL/DTZ are from White's perspective
-                            # Black wants to minimize White's best result (minimize WDL from White's perspective)
-                            # Among moves with the same WDL, choose the one with largest value of DTZ
-                            is_better_move = False
-                            if best_wdl is None:
-                                is_better_move = True
-                            elif move_wdl < best_wdl:
-                                is_better_move = True
-                            elif move_wdl == best_wdl and move_dtz is not None:
-                                if best_dtz is None:
-                                    is_better_move = True
-                                else:
-                                    # Among moves with same WDL, prefer largest value of DTZ
-                                    is_better_move = move_dtz > best_dtz
-                            
-                            if is_better_move:
-                                best_wdl = move_wdl
-                                best_dtz = move_dtz
-                                best_move = move
-                                self.logger.log(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz} - Black's best move")
+                        if not self.quiet:
+                            self.logger.log(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz}")
                     else:
-                        self.logger.log(f"  ❌ {move_san}: Not found in tablebase")
+                        if not self.quiet:
+                            self.logger.log(f"  ❌ {move_san}: Not found in tablebase")
                 except Exception as e:
                     if not self.quiet:
                         self.logger.log(f"⚠️  Error checking move {move_san}: {e}")
                 board.pop()
+            
+            # Now apply our selection logic
+            if move_candidates:
+                # Sort by WDL first (lower is better for the opponent)
+                # Then by pawn moves and captures
+                # Then by DTZ (higher is better)
+                def move_priority(candidate):
+                    wdl = candidate['wdl']
+                    is_pawn_or_capture = candidate['is_pawn_move'] or candidate['is_capture']
+                    dtz = candidate['dtz'] if candidate['dtz'] is not None else -999
+                    
+                    return (wdl, -is_pawn_or_capture, -dtz)
+                
+                move_candidates.sort(key=move_priority)
+                best_candidate = move_candidates[0]
+                
+                best_move = best_candidate['move']
+                best_wdl = best_candidate['wdl']
+                best_dtz = best_candidate['dtz']
+                
+                if not self.quiet:
+                    side_to_move = "White" if board.turn else "Black"
+                    self.logger.log(f"🎯 Selected {best_candidate['san']} for {side_to_move} (WDL={best_wdl}, DTZ={best_dtz}, Pawn/Capture={best_candidate['is_pawn_move'] or best_candidate['is_capture']})")
+            else:
+                best_move = None
+                best_wdl = None
+                best_dtz = None
             
             if not self.quiet:
                 self.logger.log(f"📊 Checked {moves_checked} moves in tablebase")

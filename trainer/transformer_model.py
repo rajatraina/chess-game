@@ -113,7 +113,7 @@ class ChessTransformer(nn.Module):
             x: Input tensor of shape (batch_size, 18, 8, 8)
             
         Returns:
-            Win probability tensor of shape (batch_size, 1)
+            Win probability tensor of shape (batch_size,)
         """
         batch_size = x.size(0)
         
@@ -131,7 +131,8 @@ class ChessTransformer(nn.Module):
         x = x.mean(dim=1)  # (batch_size, d_model)
         output = self.output_head(x)  # (batch_size, 1)
         
-        return output
+        # Squeeze to match target shape (batch_size,)
+        return output.squeeze(-1)
 
 
 class ChessTransformerConfig:

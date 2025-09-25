@@ -5,7 +5,6 @@ This module provides configuration management for the chess neural network train
 including model architecture, training parameters, and data loading settings.
 """
 
-import json
 import yaml
 import os
 from typing import Dict, Any, Optional
@@ -113,23 +112,21 @@ class TrainingConfig:
         config[keys[-1]] = value
     
     def save(self, filepath: str):
-        """Save configuration to file (JSON or YAML based on extension)."""
+        """Save configuration to YAML file."""
         filepath = Path(filepath)
+        # Ensure .yaml extension
+        if filepath.suffix.lower() not in ['.yaml', '.yml']:
+            filepath = filepath.with_suffix('.yaml')
+        
         with open(filepath, 'w') as f:
-            if filepath.suffix.lower() in ['.yaml', '.yml']:
-                yaml.dump(self.config, f, default_flow_style=False, indent=2)
-            else:
-                json.dump(self.config, f, indent=2)
+            yaml.dump(self.config, f, default_flow_style=False, indent=2)
     
     @classmethod
     def load(cls, filepath: str) -> 'TrainingConfig':
-        """Load configuration from file (JSON or YAML based on extension)."""
+        """Load configuration from YAML file."""
         filepath = Path(filepath)
         with open(filepath, 'r') as f:
-            if filepath.suffix.lower() in ['.yaml', '.yml']:
-                config_dict = yaml.safe_load(f)
-            else:
-                config_dict = json.load(f)
+            config_dict = yaml.safe_load(f)
         return cls(config_dict)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -389,7 +386,7 @@ if __name__ == "__main__":
     
     # Test save/load
     print("\n3. Testing save/load:")
-    test_config_path = "test_config.json"
+    test_config_path = "test_config.yaml"
     small_config.save(test_config_path)
     loaded_config = TrainingConfig.load(test_config_path)
     print(f"Loaded config model d_model: {loaded_config.get('model.d_model')}")
