@@ -115,7 +115,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             "simplification_material_diff_multiplier": 0.001,
             "checkmate_bonus": 100000,
             "draw_value": 0,
-            "quiescence_depth_limit": 10,
+            "quiescence_additional_depth_limit": 4,
             "cache_size_limit": 10000,
             "mobility_enabled": {
                 "knight": False,
@@ -240,11 +240,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Bishop table - encourage long diagonals
         self.bishop_table = [
             -10, -5, -5, -5, -5, -5, -5, -10,
-            -5, 0, 0, 0, 0, 0, 0, -5,
-            -5, 0, 2, 0, 0, 2, 0, -5,
-            -5, 2, 2, 5, 5, 2, 2, -5,
-            -5, 0, 5, 5, 5, 5, 0, -5,
-            -5, 5, 5, 5, 5, 5, 5, -5,
+            -5, 2, 2, 2, 2, 2, 2, -5,
+            -5, 2, 2, 2, 2, 2, 2, -5,
+            -5, 2, 2, 2, 2, 2, 2, -5,
+            -5, 0, 2, 2, 2, 2, 0, -5,
+            -5, 2, 2, 2, 2, 2, 2, -5,
             -5, 2, 0, 0, 0, 0, 2, -5,
             -10, -5, -5, -5, -5, -5, -5, -10
         ]

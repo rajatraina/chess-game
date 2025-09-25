@@ -131,6 +131,7 @@ class MinimaxEngine(Engine):
         self.time_budget_safety_margin = self.evaluation_manager.evaluator.config.get("time_budget_safety_margin", 0.1)
         
         # Load quiescence parameters
+        self.quiescence_additional_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit", 4)
         self.quiescence_include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
         self.quiescence_include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
         self.quiescence_include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
@@ -329,7 +330,9 @@ class MinimaxEngine(Engine):
             return self.evaluate(board), [], SearchStatus.COMPLETE
         
         # Limit quiescence depth
-        if depth > self.moveorder_shallow_search_quiescence_depth_limit:
+        # Calculate maximum quiescence depth as: shallow_search_depth + additional_depth_limit
+        max_quiescence_depth = self.moveorder_shallow_search_depth + self.quiescence_additional_depth_limit
+        if depth > max_quiescence_depth:
             return self.evaluate(board), [], SearchStatus.COMPLETE
         
         # Check if position is in check
@@ -1464,8 +1467,9 @@ class MinimaxEngine(Engine):
                 return self.evaluate(board), [], SearchStatus.COMPLETE
             
         # Limit quiescence depth to prevent infinite loops
-        quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_depth_limit", 10)
-        if depth > quiescence_depth_limit:
+        # Calculate maximum quiescence depth as: main_search_depth + additional_depth_limit
+        max_quiescence_depth = self.depth + self.quiescence_additional_depth_limit
+        if depth > max_quiescence_depth:
             return self.evaluate(board), [], SearchStatus.COMPLETE
         
         # Check if position is in tablebase for perfect evaluation
