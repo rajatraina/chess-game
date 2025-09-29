@@ -19,9 +19,9 @@ from typing import Dict, List, Tuple, Optional
 # Configuration options
 MIN_ELO_RATING = 100  # Minimum ELO rating for both players
 MAX_MOVES_TO_TRACK = 14  # Maximum number of moves to track in opening book
-MIN_GAMES_FOR_POSITION = 2  # Minimum number of games required for a position to be included (reduced for eval data)
+MIN_GAMES_FOR_POSITION = 1  # Minimum number of games required for a position to be included (reduced for eval data)
 MIN_TIME_CONTROL_SECONDS = 10  # Minimum base time in seconds (e.g., 180 = 3 minutes)
-MIN_MOVE_FREQUENCY_RATIO = 0.01  # Minimum frequency ratio for moves (e.g., 0.1 = 10% of most common move)
+MIN_MOVE_FREQUENCY_RATIO = 0.001  # Minimum frequency ratio for moves (e.g., 0.1 = 10% of most common move)
 OUTPUT_FILE = "lichess-opening-book-eval.txt"
 CHECKPOINT_INTERVAL = 10000000  # Write checkpoint every N games (10M)
 VERBOSE_LOGGING = False  # Set to True to enable debug logging

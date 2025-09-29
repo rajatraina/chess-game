@@ -24,7 +24,7 @@
     },
     "search_depth": 3,
     "search_depth_starting": 3,
-    "max_search_depth": 7,
+    "max_search_depth": 11,
     "search_deepening_time_budget_fraction": 0.4,
     "search_deepening_min_time_budget": 12.0,
     "time_budget_check_frequency": 1000,
@@ -39,7 +39,7 @@
         "queen": 990
     },
     "total_piece_values": 8180,
-    "simplification_material_diff_threshold": 1200,
+    "simplification_material_diff_threshold": 700,
     "simplification_material_diff_multiplier": 0.00001,
     "time_management_moves_remaining": 22,
     "time_management_increment_used": 0.9,
@@ -68,7 +68,7 @@
         "enabled": true,
         "file_path": "opening_book.txt",
         "max_depth": 20,
-        "eval_threshold": 0.03,
+        "eval_threshold": 0.01,
         "min_games": 1
     },
     "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."

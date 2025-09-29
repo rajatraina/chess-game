@@ -73,6 +73,9 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Store the starting position's piece count for consistent evaluation
         self.starting_piece_count = None
         
+        # Store the starting position's side to move for simplification logic
+        self.starting_side_to_move = None
+        
     
     def _set_starting_position(self, board: chess.Board):
         """
@@ -82,6 +85,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             board: The starting position (root position) of the search
         """
         self.starting_piece_count = chess.popcount(board.occupied)
+        self.starting_side_to_move = board.turn
     
     def _is_endgame_evaluation(self) -> bool:
         """
@@ -501,17 +505,30 @@ class HandcraftedEvaluator(BaseEvaluator):
         if black_bishops >= 2:
             material_score -= bishop_pair_bonus
         
-        # TEMPORARILY DISABLED: Material simplification may be causing absurd evaluations
-        # TODO: Investigate and fix simplification logic
-        # material_diff_abs = abs(material_score)
-        # if material_diff_abs > self.simplification_threshold:
-        #     # Calculate simplification factor
-        #     # remaining_material is the material that has been captured/traded
-        #     remaining_material = self.total_piece_values - total_material_on_board
-        #     simplification_factor = 1 + self.simplification_multiplier * remaining_material
-        #     
-        #     # Apply simplification to material score
-        #     material_score *= simplification_factor
+        # Material simplification logic for winning positions
+        # Apply simplification when the engine's side (starting side to move) is winning
+        if self.starting_side_to_move is not None:
+            # Check if the engine's side is winning
+            engine_is_winning = False
+            if self.starting_side_to_move == chess.WHITE and material_score > self.simplification_threshold:
+                # Engine is White and White is winning
+                engine_is_winning = True
+            elif self.starting_side_to_move == chess.BLACK and material_score < -self.simplification_threshold:
+                # Engine is Black and Black is winning (negative score means Black is ahead)
+                engine_is_winning = True
+            
+            if engine_is_winning:
+                # Calculate simplification factor based on how much material has been traded
+                # removed_material is the material that has been captured/traded
+                removed_material = self.total_piece_values - total_material_on_board
+                
+                # Only apply simplification if significant material has been traded
+                if removed_material > 1000:  # At least 1000 points of material traded
+                    simplification_factor = 1 + self.simplification_multiplier * removed_material
+                    
+                    # Apply simplification to material score
+                    # This makes the engine prefer to maintain its advantage through simplification
+                    material_score *= simplification_factor
         
         
         return material_score

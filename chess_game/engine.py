@@ -977,9 +977,18 @@ class MinimaxEngine(Engine):
             
             self.logger.log_iteration_complete(current_depth, iteration_time, best_move_san, best_value)
             
+            # Log top moves for this iteration
+            if move_evaluations:
+                self.logger.log_top_moves(board, move_evaluations, max_moves=5)
+            
             # Check if we can go deeper (only if time_budget is provided)
             if time_budget is not None and iteration_time >= time_budget * time_fraction:
                 self.logger.log_iterative_deepening_timeout(current_depth, iteration_time, time_budget)
+                break
+            
+            # Check if there's only one legal move - no need to go deeper
+            if len(reordered_moves) == 1:
+                self.logger.log_info(f"Only one legal move available: {board.san(reordered_moves[0])} - stopping iterative deepening")
                 break
             
             # Prepare for next iteration

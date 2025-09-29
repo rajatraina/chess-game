@@ -192,8 +192,6 @@ class UCIEngine:
         self.log(f"Side to move: {'White' if self.board.turn else 'Black'}")
         self.log(f"Search depth: {depth}")
         self.log(f"Board FEN: {self.board.fen()}")
-        self.log(f"Move count: {self.board.fullmove_number}")
-        self.log(f"Half-move clock: {self.board.halfmove_clock}")
         
         # Show recent move history (last 10 moves)
         if len(self.board.move_stack) > 0:

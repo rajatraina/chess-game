@@ -212,6 +212,30 @@ class ChessLoggingManager:
         """Log a warning message"""
         if not self.quiet:
             self.log(f"⚠️  {warning_message}")
+    
+    def log_top_moves(self, board, move_evaluations, max_moves=5):
+        """Log the top moves with their evaluations"""
+        if not self.quiet and move_evaluations:
+            try:
+                # Sort moves by evaluation (best first for the side to move)
+                # This assumes the moves are already sorted correctly from the search
+                top_moves = move_evaluations[:max_moves]
+                
+                # Format the moves with their evaluations
+                move_strings = []
+                for move, evaluation in top_moves:
+                    try:
+                        # Get SAN notation for the move
+                        move_san = board.san(move)
+                        move_strings.append(f"{move_san} ({evaluation:.1f})")
+                    except Exception:
+                        # Fallback to UCI notation if SAN fails
+                        move_strings.append(f"{move.uci()} ({evaluation:.1f})")
+                
+                top_moves_str = "  ".join(move_strings)
+                self.log(f"Top moves: {top_moves_str}")
+            except Exception as e:
+                self.log(f"Top moves: Error formatting top moves: {e}")
 
 # Global logging manager instance
 _global_logger = None
