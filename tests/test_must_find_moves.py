@@ -16,6 +16,8 @@ class TestMustFindMoves(unittest.TestCase):
     def setUp(self):
         """Set up the test environment"""
         self.engine = MinimaxEngine()
+        # Disable opening book for tests to avoid file loading issues
+        self.engine.opening_book = None
         # Use 30-second time budget for thorough testing
         self.time_budget = 30.0
     

@@ -19,10 +19,6 @@ except ImportError:
 # IMPORTANT: All logging must use self.logger methods, never print() statements.
 # This ensures clean UCI protocol communication with lichess interface.
 
-# Transposition table entry types
-EXACT = 0
-LOWER_BOUND = 1
-UPPER_BOUND = 2
 
 # Search status types
 class SearchStatus(Enum):
@@ -30,19 +26,6 @@ class SearchStatus(Enum):
     PARTIAL = "partial"        # Search timed out or was interrupted
 
 
-class TranspositionTableEntry:
-    """Represents a single entry in the transposition table"""
-    def __init__(self, hash_key, depth, score, best_move, node_type, age):
-        self.hash_key = hash_key
-        self.depth = depth
-        self.score = score
-        self.best_move = best_move
-        self.node_type = node_type  # EXACT, LOWER_BOUND, UPPER_BOUND
-        self.age = age
-    
-    def __str__(self):
-        node_type_str = {EXACT: "EXACT", LOWER_BOUND: "LOWER", UPPER_BOUND: "UPPER"}[self.node_type]
-        return f"TT[{self.hash_key:016x}] d={self.depth} s={self.score} m={self.best_move} t={node_type_str} a={self.age}"
 
 class Engine:
     """Base class for chess engines"""
@@ -96,26 +79,14 @@ class MinimaxEngine(Engine):
         self.init_tablebase()
         
         
-        # Transposition table
-        self.transposition_table = {}
-        self.tt_hits = 0
-        self.tt_misses = 0
-        self.tt_cutoffs = 0
+        # Search age for tracking
         self.search_age = 0
         
-        # TT configuration
-        self.tt_size_limit = 1000000  # Maximum number of entries
-        self.tt_enabled = self.evaluation_manager.evaluator.config.get("transposition_table_enabled", True)
+        # Killer moves storage - track cutoff counts per move per depth
+        self.killer_moves = {}  # Dictionary: depth -> {move: cutoff_count}
+        self.killer_moves_stored = 0
+        self.killer_moves_used = 0
         
-        # Initialize Zobrist hash for transposition table only if TT is enabled
-        if self.tt_enabled:
-            self._init_zobrist_hash()
-        else:
-            # Set empty hash tables to avoid errors
-            self.zobrist_pieces = {}
-            self.zobrist_castling = {}
-            self.zobrist_en_passant = {}
-            self.zobrist_side = 0
         
         # Load time management parameters
         self.time_management_moves_remaining = self.evaluation_manager.evaluator.config.get("time_management_moves_remaining", 30)
@@ -123,7 +94,6 @@ class MinimaxEngine(Engine):
         
         # Load move ordering parameters
         self.moveorder_shallow_search_depth = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_depth", 2)
-        self.moveorder_shallow_search_quiescence_depth_limit = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_quiescence_depth_limit", 2)
         
         # Load time budget parameters
         self.time_budget_check_frequency = self.evaluation_manager.evaluator.config.get("time_budget_check_frequency", 1000)
@@ -132,6 +102,7 @@ class MinimaxEngine(Engine):
         
         # Load quiescence parameters
         self.quiescence_additional_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit", 4)
+        self.quiescence_additional_depth_limit_shallow_search = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_shallow_search", 2)
         self.quiescence_include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
         self.quiescence_include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
         self.quiescence_include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
@@ -139,9 +110,9 @@ class MinimaxEngine(Engine):
         
         # Initialize search visualizer
         self.visualizer = get_visualizer()
-        viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
+        self.viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
         viz_target_fen = self.evaluation_manager.evaluator.config.get("search_visualization_target_fen", None)
-        configure_visualizer(viz_enabled, viz_target_fen)
+        configure_visualizer(self.viz_enabled, viz_target_fen)
         
         # Initialize opening book
         self.opening_book = None
@@ -212,13 +183,6 @@ class MinimaxEngine(Engine):
             eval_score, line, status = self._quiescence_shallow(board, alpha, beta, 0)
             return eval_score, line, status
         
-        # Probe transposition table
-        tt_score, tt_best_move, tt_node_type = self._probe_transposition(board, depth, alpha, beta)
-        
-        # If we have a usable transposition table entry, return it
-        if tt_score is not None:
-            return tt_score, [tt_best_move] if tt_best_move else [], SearchStatus.COMPLETE
-        
         # Check if position is in tablebase for perfect evaluation
         if self.tablebase and self.is_tablebase_position(board):
             try:
@@ -239,7 +203,9 @@ class MinimaxEngine(Engine):
                 pass
         
         # Get sorted moves for this shallow search
-        sorted_moves = self._get_sorted_moves_optimized(board, tt_best_move)
+        # Calculate absolute depth from root for killer move lookup
+        absolute_depth = self.depth - depth
+        sorted_moves = self._get_sorted_moves_optimized(board, absolute_depth)
         
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
@@ -298,14 +264,6 @@ class MinimaxEngine(Engine):
                 if alpha >= beta:
                     break  # Alpha cutoff
         
-        # Store in transposition table
-        node_type = EXACT
-        if best_value <= alpha:
-            node_type = UPPER_BOUND
-        elif best_value >= beta:
-            node_type = LOWER_BOUND
-        
-        self._store_transposition(board, depth, best_value, best_line[0] if best_line else None, node_type)
         
         return best_value, best_line, SearchStatus.COMPLETE
     
@@ -330,8 +288,8 @@ class MinimaxEngine(Engine):
             return self.evaluate(board), [], SearchStatus.COMPLETE
         
         # Limit quiescence depth
-        # Calculate maximum quiescence depth as: shallow_search_depth + additional_depth_limit
-        max_quiescence_depth = self.moveorder_shallow_search_depth + self.quiescence_additional_depth_limit
+        # Calculate maximum quiescence depth as: shallow_search_depth + shallow_search_specific_depth_limit
+        max_quiescence_depth = self.moveorder_shallow_search_depth + self.quiescence_additional_depth_limit_shallow_search
         if depth > max_quiescence_depth:
             return self.evaluate(board), [], SearchStatus.COMPLETE
         
@@ -463,180 +421,12 @@ class MinimaxEngine(Engine):
         
         return ordered_moves
     
-    def _clean_transposition_table_after_shallow_search(self):
-        """
-        Clean the transposition table after shallow search to remove low-depth entries.
-        This prevents TT pollution from shallow search entries.
-        """
-        if not self.tt_enabled:
-            return
-        
-        # Determine cutoff depth (remove entries from shallow search)
-        cutoff_depth = self.depth - 1
-        
-        # Count entries before cleaning
-        entries_before = len(self.transposition_table)
-        
-        # Remove shallow entries
-        keys_to_remove = []
-        for key, entry in self.transposition_table.items():
-            if entry.depth < cutoff_depth:
-                keys_to_remove.append(key)
-        
-        for key in keys_to_remove:
-            del self.transposition_table[key]
-        
-        # Log cleaning statistics
-        entries_after = len(self.transposition_table)
-        self.logger.log_tt_cleaning(entries_before, entries_after)
     
-    def _init_zobrist_hash(self):
-        """Initialize Zobrist hash tables for efficient position hashing"""
-        import random
-        random.seed(42)  # For reproducible hashes
-        
-        # Piece-square hash table
-        self.zobrist_pieces = {}
-        for piece_type in chess.PIECE_TYPES:
-            for color in [chess.WHITE, chess.BLACK]:
-                for square in chess.SQUARES:
-                    self.zobrist_pieces[(piece_type, color, square)] = random.getrandbits(64)
-        
-        # Castling rights hash table - iterate through all possible castling combinations
-        self.zobrist_castling = {}
-        for i in range(16):  # 4 bits for castling rights (KQkq)
-            self.zobrist_castling[i] = random.getrandbits(64)
-        
-        # En passant square hash table
-        self.zobrist_en_passant = {}
-        for square in chess.SQUARES:
-            self.zobrist_en_passant[square] = random.getrandbits(64)
-        
-        # Side to move hash
-        self.zobrist_side = random.getrandbits(64)
     
-    def _get_zobrist_hash(self, board):
-        """Generate Zobrist hash for the current board position"""
-        if not self.tt_enabled:
-            return 0  # Return dummy hash when TT is disabled
-        
-        hash_key = 0
-        
-        # Hash pieces
-        for square in chess.SQUARES:
-            piece = board.piece_at(square)
-            if piece is not None:
-                hash_key ^= self.zobrist_pieces[(piece.piece_type, piece.color, square)]
-        
-        # Hash castling rights - convert to integer index
-        castling_index = 0
-        if board.has_kingside_castling_rights(chess.WHITE):
-            castling_index |= 1
-        if board.has_queenside_castling_rights(chess.WHITE):
-            castling_index |= 2
-        if board.has_kingside_castling_rights(chess.BLACK):
-            castling_index |= 4
-        if board.has_queenside_castling_rights(chess.BLACK):
-            castling_index |= 8
-        hash_key ^= self.zobrist_castling[castling_index]
-        
-        # Hash en passant square
-        if board.ep_square is not None:
-            hash_key ^= self.zobrist_en_passant[board.ep_square]
-        
-        # Hash side to move
-        if board.turn:
-            hash_key ^= self.zobrist_side
-        
-        return hash_key
     
-    def _store_transposition(self, board, depth, score, best_move, node_type):
-        """Store a position in the transposition table"""
-        if not self.tt_enabled:
-            return
-        
-        hash_key = self._get_zobrist_hash(board)
-        
-        # Create new entry
-        entry = TranspositionTableEntry(hash_key, depth, score, best_move, node_type, self.search_age)
-        
-        # Replace existing entry or add new one
-        self.transposition_table[hash_key] = entry
-        
-        # Manage table size
-        if len(self.transposition_table) > self.tt_size_limit:
-            self._cleanup_transposition_table()
     
-    def _probe_transposition(self, board, depth, alpha, beta):
-        """Probe the transposition table for a position"""
-        if not self.tt_enabled:
-            return None, None, None
-        
-        hash_key = self._get_zobrist_hash(board)
-        
-        if hash_key not in self.transposition_table:
-            self.tt_misses += 1
-            return None, None, None
-        
-        entry = self.transposition_table[hash_key]
-        self.tt_hits += 1
-        
-        # Check if the stored entry is deep enough
-        if entry.depth >= depth:
-            score = entry.score
-            best_move = entry.best_move
-            
-            if entry.node_type == EXACT:
-                return score, best_move, entry.node_type
-            elif entry.node_type == LOWER_BOUND and score >= beta:
-                self.tt_cutoffs += 1
-                return score, best_move, entry.node_type
-            elif entry.node_type == UPPER_BOUND and score <= alpha:
-                self.tt_cutoffs += 1
-                return score, best_move, entry.node_type
-        
-        return None, entry.best_move, None  # Return best move for move ordering even if score not usable
     
-    def _cleanup_transposition_table(self):
-        """Clean up transposition table by removing old entries"""
-        if len(self.transposition_table) <= self.tt_size_limit:
-            return
-        
-        # Remove entries older than current search age - 2
-        cutoff_age = max(0, self.search_age - 2)
-        keys_to_remove = []
-        
-        for hash_key, entry in self.transposition_table.items():
-            if entry.age < cutoff_age:
-                keys_to_remove.append(hash_key)
-        
-        # Remove old entries
-        for key in keys_to_remove:
-            del self.transposition_table[key]
-        
-        # If still too large, remove random entries
-        if len(self.transposition_table) > self.tt_size_limit:
-            keys = list(self.transposition_table.keys())
-            keys_to_remove = random.sample(keys, len(keys) // 4)  # Remove 25%
-            for key in keys_to_remove:
-                del self.transposition_table[key]
     
-    def get_transposition_stats(self):
-        """Get transposition table statistics"""
-        total_probes = self.tt_hits + self.tt_misses
-        hit_rate = (self.tt_hits / total_probes * 100) if total_probes > 0 else 0
-        cutoff_rate = (self.tt_cutoffs / self.tt_hits * 100) if self.tt_hits > 0 else 0
-        
-        return {
-            'hits': self.tt_hits,
-            'misses': self.tt_misses,
-            'cutoffs': self.tt_cutoffs,
-            'total_probes': total_probes,
-            'hit_rate': hit_rate,
-            'cutoff_rate': cutoff_rate,
-            'table_size': len(self.transposition_table),
-            'table_size_limit': self.tt_size_limit
-        }
     
     def init_tablebase(self):
         """Initialize Syzygy tablebase if available"""
@@ -705,13 +495,11 @@ class MinimaxEngine(Engine):
         Returns:
             Best move found by the search
         """
-        # Increment search age for transposition table management
+        # Increment search age
         self.search_age += 1
         
-        # Reset transposition table statistics for this search
-        self.tt_hits = 0
-        self.tt_misses = 0
-        self.tt_cutoffs = 0
+        # Clear killer moves for new search to avoid stale data
+        self._clear_killer_moves()
         
         # Set the starting position for consistent evaluation throughout search
         if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
@@ -818,8 +606,6 @@ class MinimaxEngine(Engine):
         self.logger.log_info("Phase 1: Shallow search (depth 2) for move ordering...")
         sorted_moves = self._order_moves_with_shallow_search(board)
         
-        # Don't clean transposition table after shallow search for iterative deepening
-        # Keep TT entries for reuse across iterations
         
         # Phase 2: Iterative deepening loop
         current_depth = starting_depth
@@ -852,9 +638,10 @@ class MinimaxEngine(Engine):
             # Start search visualization for this iteration
             self.visualizer.start_search(board, current_depth)
             
-            # Evaluate moves in optimal order
+            # Evaluate moves in optimal order with killer moves for current depth
             if iteration > 1 and previous_iteration_move_order:
                 # Use the full move order from the previous iteration (sorted by evaluation)
+                # TODO: Should killer moves be used here?
                 reordered_moves = previous_iteration_move_order
             else:
                 # First iteration uses shallow search order
@@ -965,7 +752,6 @@ class MinimaxEngine(Engine):
             
             # Log iteration completion
             iteration_time = time.time() - start_time
-            tt_stats = self.get_transposition_stats()
             
             # Get best move SAN for logging
             best_move_san = "N/A"
@@ -988,7 +774,7 @@ class MinimaxEngine(Engine):
             
             # Check if there's only one legal move - no need to go deeper
             if len(reordered_moves) == 1:
-                self.logger.log_info(f"Only one legal move available: {board.san(reordered_moves[0])} - stopping iterative deepening")
+                self.logger.log_info(f"Only one legal move available - stopping iterative deepening")
                 break
             
             # Prepare for next iteration
@@ -997,7 +783,7 @@ class MinimaxEngine(Engine):
         
         # Log final search completion
         total_time = time.time() - start_time
-        self.logger.log_search_completion(total_time, self.nodes_searched, tt_stats)
+        self.logger.log_search_completion(total_time, self.nodes_searched, {})
         
         # Log iterative deepening completion
         best_move_san = "N/A"
@@ -1113,12 +899,6 @@ class MinimaxEngine(Engine):
         if variation is None:
             variation = []
         
-        # Probe transposition table
-        tt_score, tt_best_move, tt_node_type = self._probe_transposition(board, depth, alpha, beta)
-        
-        # If we have a usable transposition table entry, return it
-        if tt_score is not None:
-            return tt_score, [tt_best_move] if tt_best_move else [], SearchStatus.COMPLETE
         
         # Leaf node: evaluate position
         if depth == 0:
@@ -1191,8 +971,12 @@ class MinimaxEngine(Engine):
             self.visualizer.exit_node(eval_score, "TERMINAL", [], 0, 0)
             return eval_score, [], SearchStatus.COMPLETE
         
-        # Use optimized move generation and sorting, with TT best move first if available
-        sorted_moves = self._get_sorted_moves_optimized(board, tt_best_move)
+        # Use optimized move generation and sorting
+        # Calculate absolute depth from root for killer move lookup
+        # In iterative deepening, the depth parameter is the remaining depth
+        # So absolute_depth = max_search_depth - depth
+        absolute_depth = self.depth - depth
+        sorted_moves = self._get_sorted_moves_optimized(board, absolute_depth)
         
         # White's turn: maximize evaluation
         if board.turn:
@@ -1268,32 +1052,27 @@ class MinimaxEngine(Engine):
                 # Alpha-beta pruning
                 alpha = max(alpha, eval)
                 if beta <= alpha:
+                    # Store killer move before breaking
+                    self._store_killer_move(move, absolute_depth, board)
                     break  # Beta cutoff
             
-            # Store result in transposition table
-            if best_move:
-                if max_eval <= original_alpha:
-                    node_type = UPPER_BOUND
-                elif max_eval >= beta:
-                    node_type = LOWER_BOUND
-                else:
-                    node_type = EXACT
-                
-                self._store_transposition(board, depth, max_eval, best_move, node_type)
                     
 
             
             # Exit node for visualization
-            best_line_san = []
-            if best_line:
-                temp_board = board.copy()
-                for move in best_line:
-                    try:
-                        best_line_san.append(temp_board.san(move))
-                        temp_board.push(move)
-                    except Exception:
-                        best_line_san.append(move.uci())
-            self.visualizer.exit_node(max_eval, "EXACT", best_line_san, 0, 0)
+            if self.viz_enabled:
+                best_line_san = []
+                if best_line:
+                    temp_board = board.copy()
+                    for move in best_line:
+                        try:
+                            best_line_san.append(temp_board.san(move))
+                            temp_board.push(move)
+                        except Exception:
+                            best_line_san.append(move.uci())
+                self.visualizer.exit_node(max_eval, "EXACT", best_line_san, 0, 0)
+            else:
+                self.visualizer.exit_node(max_eval, "EXACT", [], 0, 0)
             return max_eval, best_line, SearchStatus.COMPLETE
             
         # Black's turn: minimize evaluation
@@ -1368,30 +1147,25 @@ class MinimaxEngine(Engine):
                 # Alpha-beta pruning
                 beta = min(beta, eval)
                 if beta <= alpha:
+                    # Store killer move before breaking
+                    self._store_killer_move(move, absolute_depth, board)
                     break  # Alpha cutoff
             
-            # Store result in transposition table
-            if best_move:
-                if min_eval <= alpha:
-                    node_type = UPPER_BOUND
-                elif min_eval >= original_beta:
-                    node_type = LOWER_BOUND
-                else:
-                    node_type = EXACT
-                
-                self._store_transposition(board, depth, min_eval, best_move, node_type)
                     
             # Exit node for visualization
-            best_line_san = []
-            if best_line:
-                temp_board = board.copy()
-                for move in best_line:
-                    try:
-                        best_line_san.append(temp_board.san(move))
-                        temp_board.push(move)
-                    except Exception:
-                        best_line_san.append(move.uci())
-            self.visualizer.exit_node(min_eval, "EXACT", best_line_san, 0, 0)
+            if self.viz_enabled:
+                best_line_san = []
+                if best_line:
+                    temp_board = board.copy()
+                    for move in best_line:
+                        try:
+                            best_line_san.append(temp_board.san(move))
+                            temp_board.push(move)
+                        except Exception:
+                            best_line_san.append(move.uci())
+                self.visualizer.exit_node(min_eval, "EXACT", best_line_san, 0, 0)
+            else:
+                self.visualizer.exit_node(min_eval, "EXACT", [], 0, 0)
             return min_eval, best_line, SearchStatus.COMPLETE
 
     def evaluate(self, board):
@@ -1502,12 +1276,6 @@ class MinimaxEngine(Engine):
                 # Fall back to standard evaluation if tablebase lookup fails
                 pass
         
-        # Probe transposition table for quiescence search (use depth 0 to indicate quiescence)
-        tt_score, tt_best_move, tt_node_type = self._probe_transposition(board, 0, alpha, beta)
-        
-        # If we have a usable transposition table entry, return it
-        if tt_score is not None:
-            return tt_score, [tt_best_move] if tt_best_move else [], SearchStatus.COMPLETE
         
         # Check if position is in check
         is_in_check = board.is_check()
@@ -1578,25 +1346,6 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     break  # Alpha cutoff
         
-        # Store result in transposition table for quiescence search
-        final_score = alpha if board.turn else beta
-        if best_move:
-            if board.turn:  # White to move
-                if final_score <= original_alpha:
-                    node_type = UPPER_BOUND
-                elif final_score >= original_beta:
-                    node_type = LOWER_BOUND
-                else:
-                    node_type = EXACT
-            else:  # Black to move
-                if final_score <= original_alpha:
-                    node_type = UPPER_BOUND
-                elif final_score >= original_beta:
-                    node_type = LOWER_BOUND
-                else:
-                    node_type = EXACT
-            
-            self._store_transposition(board, 0, final_score, best_move, node_type)
         
         if board.turn:
             return alpha, best_line, SearchStatus.COMPLETE
@@ -1639,62 +1388,120 @@ class MinimaxEngine(Engine):
     
 
     
-    def _get_sorted_moves_optimized(self, board, tt_best_move=None):
+    def _get_sorted_moves_optimized(self, board, depth=0):
         """
-        Optimized move generation and sorting with transposition table support.
+        Optimized move generation and sorting with killer move support.
+        
+        Move order:
+        1. Winning captures (MVV-LVA > 0)
+        2. Killer moves
+        3. Other captures (MVV-LVA <= 0)
+        4. Checks
+        5. Non-captures
         
         Args:
             board: Current board state
-            tt_best_move: Best move from transposition table (if available)
+            depth: Current search depth (for killer moves)
             
         Returns:
-            List of moves sorted by priority (TT move first, then captures, then checks, then others)
+            List of moves sorted by priority
         """
-        # Use generator to avoid creating full list initially
         legal_moves = board.legal_moves
-        captures = []
+        winning_captures = []
+        other_captures = []
+        killer_moves = []
         checks = []
         non_captures = []
-        tt_move_found = False
+        
+        # Get killer moves for this depth
+        current_killers = self.killer_moves.get(depth, {})
         
         # Single pass to categorize moves
         for move in legal_moves:
-            # Check if this is the TT best move
-            if tt_best_move and move == tt_best_move:
-                tt_move_found = True
-                continue  # We'll add it first later
-            
             if board.is_capture(move):
-                captures.append(move)
-            else:
-                # Check if move gives check (but not checkmate - that's handled by search)
-                if board.is_into_check(move):
-                    checks.append(move)
+                # Calculate MVV-LVA value for capture
+                capture_value = self._get_capture_value(board, move)
+                if capture_value > 0:
+                    # Winning capture - highest priority
+                    winning_captures.append((move, capture_value))
+                elif move in current_killers:
+                    # Non-winning capture that is also a killer move - prioritize as killer
+                    killer_moves.append((move, current_killers[move]))
                 else:
-                    non_captures.append(move)
+                    # Non-winning capture that is not a killer move
+                    other_captures.append((move, capture_value))
+            elif move in current_killers:
+                # Non-capture killer move
+                killer_moves.append((move, current_killers[move]))
+            elif board.is_into_check(move):
+                checks.append(move)
+            else:
+                non_captures.append(move)
         
-        # Pre-calculate capture values for better sorting
-        if captures:
-            capture_values = []
-            for move in captures:
-                value = self._get_capture_value(board, move)
-                capture_values.append((move, value))
-            
-            # Sort captures by value (highest first)
-            capture_values.sort(key=lambda x: x[1], reverse=True)
-            sorted_captures = [move for move, _ in capture_values]
-        else:
-            sorted_captures = []
+        # Sort winning captures by MVV-LVA (highest first)
+        winning_captures.sort(key=lambda x: x[1], reverse=True)
+        sorted_winning_captures = [move for move, _ in winning_captures]
         
-        # Combine moves: TT move first (if found), then captures, then checks, then other moves
+        # Sort other captures by MVV-LVA (highest first)
+        other_captures.sort(key=lambda x: x[1], reverse=True)
+        sorted_other_captures = [move for move, _ in other_captures]
+        
+        # Sort killer moves by cutoff count (highest first)
+        killer_moves.sort(key=lambda x: x[1], reverse=True)
+        sorted_killer_moves = [move for move, _ in killer_moves]
+        
+        # Track killer moves used for statistics
+        if killer_moves:
+            self.killer_moves_used += len(killer_moves)
+        
+        # Combine moves in the specified order: winning captures first, then killer moves by count, then rest
         result = []
-        if tt_move_found and tt_best_move:
-            result.append(tt_best_move)
-        result.extend(sorted_captures)
+        result.extend(sorted_winning_captures)
+        result.extend(sorted_killer_moves)
+        result.extend(sorted_other_captures)
         result.extend(checks)
         result.extend(non_captures)
         
         return result
+
+    def _store_killer_move(self, move, depth, board):
+        """Store a killer move that caused a beta cutoff at the given depth."""
+        if depth <= 0:
+            return  # Don't store killer moves at leaf nodes
+        
+        # Don't store captures or promotions as killer moves
+        if move.promotion or board.is_capture(move):
+            return
+        
+        # Initialize killer moves for this depth if not exists
+        if depth not in self.killer_moves:
+            self.killer_moves[depth] = {}
+        
+        killer_dict = self.killer_moves[depth]
+        
+        # Increment cutoff count for this move
+        if move in killer_dict:
+            killer_dict[move] += 1
+        else:
+            killer_dict[move] = 1
+            self.killer_moves_stored += 1
+
+    def _clear_killer_moves(self):
+        """Clear all killer moves to avoid stale data from previous searches."""
+        self.killer_moves.clear()
+        self.killer_moves_stored = 0
+        self.killer_moves_used = 0
+
+    def get_killer_move_stats(self):
+        """Get killer move statistics."""
+        total_cutoffs = sum(sum(counts.values()) for counts in self.killer_moves.values())
+        return {
+            'killer_moves_stored': self.killer_moves_stored,
+            'killer_moves_used': self.killer_moves_used,
+            'killer_depths': len(self.killer_moves),
+            'total_killer_entries': sum(len(moves) for moves in self.killer_moves.values()),
+            'total_cutoffs': total_cutoffs
+        }
 
     def test_capture_evaluation(self, board, move):
         """

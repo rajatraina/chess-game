@@ -130,7 +130,8 @@ class ChessLoggingManager:
         if not self.quiet:
             nodes_per_second = nodes_searched / search_time if search_time > 0 else 0
             self.log(f"⏱️ Search completed in {search_time:.2f}s")
-            self.log(f"🔄 TT: {tt_stats['hits']}/{tt_stats['total_probes']} hits ({tt_stats['hit_rate']:.1f}%) | Cutoffs: {tt_stats['cutoffs']} ({tt_stats['cutoff_rate']:.1f}%)")
+            if tt_stats and 'hits' in tt_stats:
+                self.log(f"🔄 TT: {tt_stats['hits']}/{tt_stats['total_probes']} hits ({tt_stats['hit_rate']:.1f}%) | Cutoffs: {tt_stats['cutoffs']} ({tt_stats['cutoff_rate']:.1f}%)")
             self.log(f"🚀 Speed: {nodes_per_second:.0f} nodes/s")
     
     def log_best_move(self, board, best_move, best_value, best_line, eval_components=None):
