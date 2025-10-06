@@ -8,12 +8,12 @@ from enum import Enum
 try:
     from .evaluation import EvaluationManager, create_evaluator
     from .logging_manager import get_logger
-    from .search_visualizer import get_visualizer, configure_visualizer
+    from .search_visualizer import get_visualizer, get_noop_visualizer, configure_visualizer
     from .opening_book import OpeningBook, OpeningBookError
 except ImportError:
     from evaluation import EvaluationManager, create_evaluator
     from logging_manager import get_logger
-    from search_visualizer import get_visualizer, configure_visualizer
+    from search_visualizer import get_visualizer, get_noop_visualizer, configure_visualizer
     from opening_book import OpeningBook, OpeningBookError
 
 # IMPORTANT: All logging must use self.logger methods, never print() statements.
@@ -109,10 +109,14 @@ class MinimaxEngine(Engine):
         self.quiescence_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_value_threshold", 500)
         
         # Initialize search visualizer
-        self.visualizer = get_visualizer()
         self.viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
         viz_target_fen = self.evaluation_manager.evaluator.config.get("search_visualization_target_fen", None)
-        configure_visualizer(self.viz_enabled, viz_target_fen)
+        
+        if self.viz_enabled:
+            self.visualizer = get_visualizer()
+            configure_visualizer(self.viz_enabled, viz_target_fen)
+        else:
+            self.visualizer = get_noop_visualizer()
         
         # Initialize opening book
         self.opening_book = None
@@ -621,12 +625,7 @@ class MinimaxEngine(Engine):
         while current_depth <= max_depth:
             # Log iteration start
             self.logger.log_iteration_start(iteration, current_depth)
-            
-            # Check if we should allow deepening (only after configured start move)
-            iterative_deepening_start_move = self.evaluation_manager.evaluator.config.get("iterative_deepening_start_move", 5)
-            if current_move_number < iterative_deepening_start_move and iteration > 1:
-                self.logger.log_info(f"Move {current_move_number} < {iterative_deepening_start_move}, stopping iterative deepening at depth {current_depth}")
-                break
+        
             
             # Initialize for this iteration
             alpha = -float('inf')
@@ -823,15 +822,18 @@ class MinimaxEngine(Engine):
             return
         
         # Finish search visualization if enabled
-        pv_san = []
-        pv_board = board.copy()
-        for m in best_line:
-            try:
-                pv_san.append(pv_board.san(m))
-                pv_board.push(m)
-            except Exception:
-                break
-        self.visualizer.finish_search(board.san(best_move), best_value, self.nodes_searched, search_time, pv_san)
+        if self.viz_enabled:
+            pv_san = []
+            pv_board = board.copy()
+            for m in best_line:
+                try:
+                    pv_san.append(pv_board.san(m))
+                    pv_board.push(m)
+                except Exception:
+                    break
+            self.visualizer.finish_search(board.san(best_move), best_value, self.nodes_searched, search_time, pv_san)
+        else:
+            self.visualizer.finish_search("", best_value, self.nodes_searched, search_time, [])
         
         # Export visualization to file
         self.move_counter += 1
@@ -898,8 +900,7 @@ class MinimaxEngine(Engine):
         # Initialize variation if None
         if variation is None:
             variation = []
-        
-        
+                
         # Leaf node: evaluate position
         if depth == 0:
             # Check if position is in tablebase for perfect evaluation
@@ -1055,9 +1056,6 @@ class MinimaxEngine(Engine):
                     # Store killer move before breaking
                     self._store_killer_move(move, absolute_depth, board)
                     break  # Beta cutoff
-            
-                    
-
             
             # Exit node for visualization
             if self.viz_enabled:
@@ -1261,17 +1259,30 @@ class MinimaxEngine(Engine):
                 wdl = self.tablebase.get_wdl(board)
                 if wdl is not None:
                     # Convert WDL to evaluation score
+                    # WDL values are from the perspective of the side to move
                     # WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
-                    if wdl == 2:  # Win
-                        return 100000, [], SearchStatus.COMPLETE
-                    elif wdl == 1:  # Cursed win
-                        return 50000, [], SearchStatus.COMPLETE
-                    elif wdl == 0:  # Draw
-                        return 0, [], SearchStatus.COMPLETE
-                    elif wdl == -1:  # Blessed loss
-                        return -50000, [], SearchStatus.COMPLETE
-                    elif wdl == -2:  # Loss
-                        return -100000, [], SearchStatus.COMPLETE
+                    if board.turn:  # White to move
+                        if wdl == 2:  # White wins
+                            return 100000, [], SearchStatus.COMPLETE
+                        elif wdl == 1:  # White cursed win
+                            return 50000, [], SearchStatus.COMPLETE
+                        elif wdl == 0:  # Draw
+                            return 0, [], SearchStatus.COMPLETE
+                        elif wdl == -1:  # White blessed loss
+                            return -50000, [], SearchStatus.COMPLETE
+                        elif wdl == -2:  # White loses
+                            return -100000, [], SearchStatus.COMPLETE
+                    else:  # Black to move
+                        if wdl == 2:  # Black wins (bad for White)
+                            return -100000, [], SearchStatus.COMPLETE
+                        elif wdl == 1:  # Black cursed win (bad for White)
+                            return -50000, [], SearchStatus.COMPLETE
+                        elif wdl == 0:  # Draw
+                            return 0, [], SearchStatus.COMPLETE
+                        elif wdl == -1:  # Black blessed loss (good for White)
+                            return 50000, [], SearchStatus.COMPLETE
+                        elif wdl == -2:  # Black loses (good for White)
+                            return 100000, [], SearchStatus.COMPLETE
             except Exception:
                 # Fall back to standard evaluation if tablebase lookup fails
                 pass

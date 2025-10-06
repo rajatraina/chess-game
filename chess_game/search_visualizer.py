@@ -365,12 +365,56 @@ class SearchTreeVisualizer:
                 print(f"{indent}   ... and {len(node.children) - max_children} more children")
                 print()
 
+class NoOpVisualizer:
+    """No-operation visualizer that provides the same interface as SearchTreeVisualizer but does nothing."""
+    
+    def should_visualize(self, board: chess.Board) -> bool:
+        """Always returns False - no visualization."""
+        return False
+    
+    def start_search(self, board: chess.Board, depth: int):
+        """No-op - does nothing."""
+        pass
+    
+    def enter_node(self, board: chess.Board, move: Optional[chess.Move], depth: int, 
+                   alpha: float, beta: float, quiescence: bool = False):
+        """No-op - does nothing."""
+        pass
+    
+    def exit_node(self, evaluation: float, node_type: str, principal_variation: List[str], 
+                  nodes_searched: int, time_taken: float, tt_hit: bool = False, 
+                  tt_depth: int = 0, evaluation_components: Optional[Dict[str, float]] = None,
+                  move_order: Optional[List[str]] = None, beta_cutoff: bool = False):
+        """No-op - does nothing."""
+        pass
+    
+    def record_beta_cutoff(self, cutoff_move: str):
+        """No-op - does nothing."""
+        pass
+    
+    def finish_search(self, best_move: str, best_evaluation: float, total_nodes: int, 
+                     total_time: float, final_pv: List[str]):
+        """No-op - does nothing."""
+        pass
+    
+    def export_tree_to_file(self, move_number: int = 1) -> str:
+        """Returns empty string - no file export."""
+        return ""
+    
+    def record_move_considered(self, move: chess.Move, board: chess.Board):
+        """No-op - does nothing."""
+        pass
+
 # Global visualizer instance
 _global_visualizer = SearchTreeVisualizer()
 
 def get_visualizer() -> SearchTreeVisualizer:
     """Get the global search tree visualizer instance."""
     return _global_visualizer
+
+def get_noop_visualizer() -> NoOpVisualizer:
+    """Get a no-operation visualizer instance."""
+    return NoOpVisualizer()
 
 def configure_visualizer(enabled: bool = False, target_fen: Optional[str] = None):
     """Configure the global search tree visualizer."""

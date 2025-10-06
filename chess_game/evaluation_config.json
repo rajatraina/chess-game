@@ -30,7 +30,6 @@
     "time_budget_check_frequency": 1000,
     "time_budget_early_exit_enabled": true,
     "time_budget_safety_margin": 0.1,
-    "iterative_deepening_start_move": 1,
     "piece_values": {
         "pawn": 100,
         "knight": 320,
