@@ -1,8 +1,9 @@
 """
-Chess Neural Network Trainer
+Chess NNUE Trainer
 
-This package provides tools for training neural networks to evaluate chess positions.
-It includes transformer-based architectures, data loading pipelines, and training utilities.
+This package provides tools for training NNUE (Efficiently Updatable Neural Networks) models 
+to evaluate chess positions. NNUE models use piece-square table features and are much 
+simpler and more interpretable than transformer-based approaches.
 """
 
 __version__ = "1.0.0"

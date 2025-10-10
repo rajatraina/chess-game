@@ -165,16 +165,17 @@ class ChessLoggingManager:
                     positional = eval_components.get('positional', 0)
                     mobility = eval_components.get('mobility', 0)
                     king_safety = eval_components.get('king_safety', 0)
-                    overall_eval = material + positional + mobility + king_safety
-                    self.log(f"📊 Overall: {overall_eval:.1f} (Material: {material:.1f}, Position: {positional:.1f}, Mobility: {mobility:.1f}, King Safety: {king_safety:.1f})")
+                    pawn_structure = eval_components.get('pawn_structure', 0)
+                    overall_eval = material + positional + mobility + king_safety + pawn_structure
+                    self.log(f"📊 Overall: {overall_eval:.1f} (Material: {material:.1f}, Position: {positional:.1f}, Mobility: {mobility:.1f}, King Safety: {king_safety:.1f}, Pawn Structure: {pawn_structure:.1f})")
                     
             except Exception as e:
                 self.log(f"🏆 Best: {best_move.uci()} (SAN error: {e})")
     
-    def log_shallow_search_stats(self, shallow_nodes, num_moves):
+    def log_shallow_search_stats(self, shallow_nodes, num_moves, elapsed_time):
         """Log shallow search statistics"""
         if not self.quiet:
-            self.log(f"📊 Shallow search completed: {shallow_nodes} nodes, {num_moves} moves evaluated")
+            self.log(f"📊 Shallow search completed: {shallow_nodes} nodes, {num_moves} moves evaluated in {elapsed_time:.1f}s")
     
     def log_tt_cleaning(self, entries_before, entries_after):
         """Log transposition table cleaning statistics"""

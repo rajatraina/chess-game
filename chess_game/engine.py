@@ -90,6 +90,7 @@ class MinimaxEngine(Engine):
         
         # Load time management parameters
         self.time_management_moves_remaining = self.evaluation_manager.evaluator.config.get("time_management_moves_remaining", 30)
+        self.time_management_moves_remaining_endgame = self.evaluation_manager.evaluator.config.get("time_management_moves_remaining_endgame", 10)
         self.time_management_increment_used = self.evaluation_manager.evaluator.config.get("time_management_increment_used", 0.8)
         
         # Load move ordering parameters
@@ -129,13 +130,14 @@ class MinimaxEngine(Engine):
         self.best_value = None
         self.best_line = []
     
-    def calculate_time_budget(self, time_remaining, increment):
+    def calculate_time_budget(self, time_remaining, increment, board=None):
         """
         Calculate time budget for the current move.
         
         Args:
             time_remaining: Time remaining in milliseconds
             increment: Time increment in milliseconds
+            board: Current board state (optional, for endgame detection)
             
         Returns:
             Time budget in seconds
@@ -144,8 +146,16 @@ class MinimaxEngine(Engine):
         time_remaining_sec = time_remaining / 1000.0
         increment_sec = increment / 1000.0
         
+        # Determine if this is an endgame position using existing evaluation logic
+        is_endgame = False
+        if board is not None:
+            is_endgame = self.evaluation_manager.evaluator._is_endgame_evaluation()
+        
+        # Use appropriate moves remaining parameter
+        moves_remaining = self.time_management_moves_remaining_endgame if is_endgame else self.time_management_moves_remaining
+        
         # Calculate time budget using the formula
-        time_budget = (time_remaining_sec / self.time_management_moves_remaining) + (increment_sec * self.time_management_increment_used)
+        time_budget = (time_remaining_sec / moves_remaining) + (increment_sec * self.time_management_increment_used)
         
         # Ensure minimum time budget of 0.1 seconds
         return max(time_budget, 0.1)
@@ -315,7 +325,7 @@ class MinimaxEngine(Engine):
                 beta = min(beta, stand_pat)
         
         # Determine which moves to search
-        if is_in_check:
+        if is_in_check: ## OR is_in_fork: (generate pieces that will be forked?)
             # If in check, search ALL legal moves
             moves_to_search = list(board.legal_moves)
         else:
@@ -375,7 +385,8 @@ class MinimaxEngine(Engine):
             board: Current board state
             
         Returns:
-            List of moves ordered by shallow search evaluation
+            Tuple of (ordered_moves, shallow_search_stats) where shallow_search_stats contains
+            nodes and moves count for predictive time management
         """
         if not self.quiet:
             self.logger.log_info(f"Performing shallow search (depth {self.moveorder_shallow_search_depth}) for move ordering...")
@@ -418,12 +429,21 @@ class MinimaxEngine(Engine):
         # Extract ordered moves
         ordered_moves = [move for move, eval_score in move_evaluations]
         
-        # Log shallow search statistics and move order
+        # Calculate shallow search statistics for predictive time management
         shallow_nodes = self.nodes_searched - original_nodes
-        self.logger.log_shallow_search_stats(shallow_nodes, len(legal_moves))
+        shallow_moves = len(legal_moves)
+        # Use overall search start time to show time since move calculation began
+        total_elapsed_time = time.time() - self.search_start_time
+        shallow_search_stats = {
+            'nodes': shallow_nodes,
+            'moves': shallow_moves
+        }
+        
+        # Log shallow search statistics and move order
+        self.logger.log_shallow_search_stats(shallow_nodes, shallow_moves, total_elapsed_time)
         self.logger.log_move_order(board, ordered_moves)
         
-        return ordered_moves
+        return ordered_moves, shallow_search_stats
     
     
     
@@ -608,11 +628,25 @@ class MinimaxEngine(Engine):
         
         # Phase 1: Perform shallow search for initial move ordering
         self.logger.log_info("Phase 1: Shallow search (depth 2) for move ordering...")
-        sorted_moves = self._order_moves_with_shallow_search(board)
+        sorted_moves, shallow_search_stats = self._order_moves_with_shallow_search(board)
         
         
-        # Phase 2: Iterative deepening loop
-        current_depth = starting_depth
+        # Phase 2: Determine optimal starting depth using predictive time management
+        if time_budget is not None and self.evaluation_manager.evaluator.config.get("predictive_time_management_enabled", True):
+            # Calculate remaining time after shallow search and other processing
+            elapsed_time = time.time() - start_time
+            remaining_time = time_budget - elapsed_time
+            
+            # Use predictive time management to determine optimal starting depth
+            optimal_starting_depth = self._predict_optimal_starting_depth(shallow_search_stats, remaining_time)
+            self.logger.log_info(f"Predictive time management: elapsed={elapsed_time:.2f}s, remaining={remaining_time:.2f}s, using depth {optimal_starting_depth} as starting depth")
+        else:
+            # Use default starting depth
+            optimal_starting_depth = starting_depth
+            self.logger.log_info(f"Using default starting depth: {optimal_starting_depth}")
+        
+        # Phase 3: Iterative deepening loop
+        current_depth = optimal_starting_depth
         completed_depth = None  # Track the depth that was actually completed
         iteration = 1
         
@@ -620,7 +654,7 @@ class MinimaxEngine(Engine):
         current_move_number = len(board.move_stack) // 2 + 1
         
         # Log iterative deepening start
-        self.logger.log_iterative_deepening_start(starting_depth, max_depth)
+        self.logger.log_iterative_deepening_start(optimal_starting_depth, max_depth)
         
         while current_depth <= max_depth:
             # Log iteration start
@@ -1502,6 +1536,74 @@ class MinimaxEngine(Engine):
         self.killer_moves.clear()
         self.killer_moves_stored = 0
         self.killer_moves_used = 0
+
+    def predict_time(self, nodes: int, moves: int) -> dict[int, float]:
+        """
+        Predict search time for different depths based on nodes and moves from shallow search.
+        
+        Args:
+            nodes: Number of nodes searched in shallow search
+            moves: Number of moves evaluated in shallow search
+            
+        Returns:
+            Dictionary mapping depth to predicted time in seconds
+        """
+        # Trained on all successful logs; asymmetric loss (underestimates ×2)
+        # Base (depth 3): t3 ≈ a*nodes + b*moves + c
+        a, b, c = 3.7553488e-04, 8.7297724e-03, -3.1391132e-02
+        # Multiplicative growth factors for +2 plies (3→5, 5→7)
+        r35, r57 = 4.4461542, 7.7833396
+        t3 = max(0.0, a * nodes + b * moves + c)
+
+        # Illustrative results from this model:
+        # 1,000 nodes, 5 moves   -> t3=0.39s,  t5=1.72s,   t7=13.42s
+        # 5,000 nodes, 30 moves  -> t3=2.11s,  t5=9.37s,   t7=72.96s
+        # 15,000 nodes, 35 moves -> t3=5.91s,  t5=26.26s,  t7=204.42s
+        # 40,000 nodes, 40 moves -> t3=15.34s, t5=68.20s,  t7=530.83s
+        # 100,000 nodes, 60 moves-> t3=38.05s, t5=169.16s, t7=1316.61s
+
+        return {3: t3, 5: t3 * r35, 7: t3 * r35 * r57}
+
+    def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget):
+        """
+        Predict the optimal starting depth for iterative deepening based on shallow search results.
+        
+        Args:
+            shallow_search_stats: Dictionary with 'nodes' and 'moves' from shallow search
+            time_budget: Available time budget in seconds
+            
+        Returns:
+            Optimal starting depth (3, 5, or 7)
+        """
+        if not shallow_search_stats or 'nodes' not in shallow_search_stats or 'moves' not in shallow_search_stats:
+            # Fallback to default if no shallow search stats available
+            return self.evaluation_manager.evaluator.config.get("search_depth_starting", 3)
+        
+        nodes = shallow_search_stats['nodes']
+        moves = shallow_search_stats['moves']
+        
+        # Get predicted times for different depths
+        predicted_times = self.predict_time(nodes, moves)
+        
+        # Find the highest depth we can complete within the time budget
+        # Use a safety factor to ensure we don't exceed the budget
+        safety_factor = self.evaluation_manager.evaluator.config.get("predictive_time_safety_factor", 0.8)
+        available_time = time_budget * safety_factor
+        
+        optimal_depth = 3  # Default fallback
+        
+        # Check depths in order of preference [7, 5, 3]
+        for depth in [3]:
+            if predicted_times[depth] <= available_time:
+                optimal_depth = depth
+                break
+        
+        if not self.quiet:
+            self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}")
+            self.logger.log_info(f"Predicted times: depth 3={predicted_times[3]:.2f}s, depth 5={predicted_times[5]:.2f}s, depth 7={predicted_times[7]:.2f}s")
+            self.logger.log_info(f"Time budget: {time_budget:.2f}s, available: {available_time:.2f}s, optimal depth: {optimal_depth}")
+        
+        return optimal_depth
 
     def get_killer_move_stats(self):
         """Get killer move statistics."""

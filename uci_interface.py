@@ -228,9 +228,9 @@ class UCIEngine:
         # Calculate time budget
         time_budget = None
         if self.board.turn and wtime is not None:  # White's turn
-            time_budget = self.engine.calculate_time_budget(wtime, winc or 0)
+            time_budget = self.engine.calculate_time_budget(wtime, winc or 0, self.board)
         elif not self.board.turn and btime is not None:  # Black's turn
-            time_budget = self.engine.calculate_time_budget(btime, binc or 0)
+            time_budget = self.engine.calculate_time_budget(btime, binc or 0, self.board)
         
         if time_budget is not None:
             self.engine.logger.log_time_budget(time_budget)

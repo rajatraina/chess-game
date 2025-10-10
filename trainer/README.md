@@ -1,24 +1,24 @@
-# Chess Neural Network Trainer
+# Chess NNUE Trainer
 
-This directory contains a complete neural network training system for chess position evaluation using transformer architectures.
+This directory contains a complete NNUE (Efficiently Updatable Neural Networks) training system for chess position evaluation. NNUE models are much simpler and more interpretable than transformer-based approaches.
 
 ## Features
 
-- **Transformer-based Architecture**: Uses attention mechanisms instead of convolutional layers
-- **Efficient Data Loading**: Streams data from compressed `.zst` files with batch processing (compressed files only)
-- **Side-to-move Perspective**: Always evaluates from the perspective of the side to move
-- **Win Probability Output**: Converts centipawn evaluations to win probabilities using logistic function
-- **Flexible Configuration**: Supports multiple model sizes and training configurations
+- **NNUE Architecture**: Uses piece-square table features instead of complex neural networks
+- **Efficient Data Loading**: Streams data from compressed `.zst` files with batch processing
+- **Centipawn Evaluation**: Directly predicts centipawn values for position evaluation
+- **Simple and Fast**: Much faster training and inference than transformer models
+- **Interpretable**: Piece-square table features are easy to understand and debug
 - **PyTorch Integration**: Full PyTorch training pipeline with validation and checkpointing
 
 ## Architecture
 
-The neural network uses a transformer architecture specifically designed for chess:
+The NNUE model uses a simple but effective architecture:
 
-1. **Input Projection**: Converts 8×8×18 board representation to transformer input
-2. **Positional Encoding**: Adds position information for the 64 squares
-3. **Transformer Encoder**: Multi-head attention layers for position understanding
-4. **Output Head**: Produces win probability [0, 1] from side-to-move perspective
+1. **Feature Extraction**: Converts chess position to piece-square table features (768 features)
+2. **Hidden Layers**: 2-3 fully connected layers with ReLU activation
+3. **Output**: Single centipawn evaluation value
+4. **Training**: MSE loss for centipawn prediction
 
 ## Data Format
 
@@ -50,114 +50,74 @@ The trainer expects training data in the following JSON format (one position per
 pip install torch zstandard
 ```
 
-### 2. Train with Preset Configuration
+### 2. Train with Configuration File
 
 ```bash
-# Small model for testing
-python -m trainer.train --data-file localdata/lichess_db_eval.jsonl.zst --preset small
+# Use default config file
+python3 trainer/train_nnue.py
 
-# Medium model for balanced performance
-python -m trainer.train --data-file localdata/lichess_db_eval.jsonl.zst --preset medium
+# Use custom config file
+python3 trainer/train_nnue.py --config my_experiment_config.yaml
 
-# Large model for maximum performance
-python -m trainer.train --data-file localdata/lichess_db_eval.jsonl.zst --preset large
+# With custom save directory
+python3 trainer/train_nnue.py --config config_nnue.yaml --save-dir my_nnue_checkpoints
 ```
 
-### 3. Custom Training
+### 3. Resume Training
 
 ```bash
-python -m trainer.train \
-    --data-file localdata/lichess_db_eval.jsonl.zst \
-    --batch-size 64 \
-    --learning-rate 1e-4 \
-    --num-epochs 50 \
-    --max-positions 100000 \
-    --save-dir my_checkpoints
+python3 trainer/train_nnue.py \
+    --config config_nnue.yaml \
+    --resume checkpoints_nnue/best_model.pth
 ```
 
-### 4. Resume Training
+## Configuration Examples
+
+### Default Configuration
+The `config_nnue.yaml` file contains a balanced configuration:
+- 256 hidden size, 2 layers
+- 64 batch size, 0.001 learning rate, 50 epochs
+- 1M max training positions
+- Uses complete validation set
+
+## Creating Custom Configurations
+
+For different experiments, create new config files:
 
 ```bash
-python -m trainer.train \
-    --data-file localdata/lichess_db_eval.jsonl.zst \
-    --resume checkpoints/best_model.pth \
-    --preset medium
+# Copy the default config
+cp config_nnue.yaml my_experiment.yaml
+
+# Edit my_experiment.yaml with your changes
+# Then run:
+python3 trainer/train_nnue.py --config my_experiment.yaml
 ```
 
-## Configuration Presets
-
-### Small (Testing)
-- 128 dimensions, 4 heads, 3 layers
-- Fast training, good for development
-- ~1M parameters
-
-### Medium (Balanced)
-- 256 dimensions, 8 heads, 6 layers
-- Good balance of performance and speed
-- ~5M parameters
-
-### Large (Performance)
-- 512 dimensions, 16 heads, 12 layers
-- Maximum performance, slower training
-- ~50M parameters
-
-### Fast (Quick Iterations)
-- 64 dimensions, 2 heads, 2 layers
-- Very fast training for quick experiments
-- ~100K parameters
-
-## Custom Configuration
-
-Create a JSON configuration file:
-
-```json
-{
-  "model": {
-    "d_model": 256,
-    "nhead": 8,
-    "num_layers": 6,
-    "dim_feedforward": 1024,
-    "dropout": 0.1
-  },
-  "training": {
-    "batch_size": 32,
-    "learning_rate": 1e-4,
-    "num_epochs": 100,
-    "val_split": 0.1,
-    "optimizer": "adamw"
-  },
-  "data": {
-    "num_workers": 4,
-    "max_positions": null
-  }
-}
-```
-
-Then use it:
-
-```bash
-python -m trainer.train --data-file data.jsonl.zst --config my_config.yaml
-```
+The config file contains all settings:
+- Model architecture (hidden size, layers, dropout)
+- Training parameters (batch size, learning rate, epochs)
+- Data loading settings (file paths, workers, memory)
+- Hardware configuration (device, mixed precision)
 
 ## Model Integration
 
-The trained model can be integrated with the existing chess engine:
+The trained NNUE model can be integrated with the existing chess engine:
 
 ```python
-from trainer.transformer_model import create_model
-from trainer.trainer import ChessTrainer
+from trainer.nnue_model import create_nnue_model
+from trainer.nnue_trainer import NNUETrainer
 import torch
 
-# Load trained model
-model = create_model(config)
-trainer = ChessTrainer(model)
-trainer.load_model('checkpoints/best_model.pth')
+# Load trained NNUE model
+model = create_nnue_model(config['model'])
+trainer = NNUETrainer(model)
+trainer.load_model('checkpoints_nnue/best_model.pth')
 
 # Use for evaluation
 board = chess.Board()
 features = trainer.feature_extractor._board_to_features(board)
 features_tensor = torch.from_numpy(features).float().unsqueeze(0)
-win_prob = model(features_tensor).item()
+centipawn_eval = model(features_tensor).item()
 ```
 
 ## File Structure
@@ -165,24 +125,25 @@ win_prob = model(features_tensor).item()
 ```
 trainer/
 ├── __init__.py              # Package initialization
-├── transformer_model.py     # Transformer architecture
-├── data_loader.py          # Data loading and preprocessing
-├── trainer.py              # Training loop and utilities
-├── config.py               # Configuration management
-├── train.py                # Main training script
+├── nnue_model.py           # NNUE model architecture
+├── nnue_trainer.py         # NNUE training loop and utilities
+├── nnue_data_loader.py     # NNUE data loading and preprocessing
+├── train_nnue.py           # Main NNUE training script
+├── config_nnue.yaml        # NNUE configuration file
 ├── README.md               # This file
 └── localdata/              # Training data directory
-    ├── lichess_db_eval.jsonl.zst
-    └── lichess_db_eval.sample.jsonl
+    ├── lichess_db_eval.train.jsonl.zst
+    └── lichess_db_eval.val.jsonl.zst
 ```
 
 ## Training Tips
 
-1. **Start Small**: Use the `small` or `fast` preset for initial experiments
+1. **Start Small**: Use the `small` preset for initial experiments
 2. **Monitor Validation**: Watch for overfitting with validation loss
 3. **Adjust Learning Rate**: Lower for stable training, higher for faster convergence
 4. **Batch Size**: Larger batches for stability, smaller for memory constraints
-5. **Data Size**: Start with limited data (`--max-positions`) for faster iterations
+5. **Data Size**: Start with limited data for faster iterations
+6. **NNUE Benefits**: Much faster training and inference than transformer models
 
 ## Hardware Requirements
 

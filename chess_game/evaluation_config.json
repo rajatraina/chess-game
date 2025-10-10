@@ -41,6 +41,7 @@
     "simplification_material_diff_threshold": 700,
     "simplification_material_diff_multiplier": 0.00001,
     "time_management_moves_remaining": 22,
+    "time_management_moves_remaining_endgame": 10,
     "time_management_increment_used": 0.9,
     "checkmate_bonus": 100000,
     "draw_value": 0,
@@ -58,8 +59,11 @@
     "kingside_castling_right_penalty": -15,
     "queenside_castling_right_penalty": -10,
     "pawn_shield_weight": 20,
-    "bishop_pair_bonus": 10,
+    "bishop_pair_bonus": 0,
     "king_safety_weight": 1.0,
+    "pawn_structure_enabled": true,
+    "pawn_islands_weight": 4,
+    "passed_pawn_bonus": 20,
     "search_visualization_enabled": false,
     "search_visualization_target_fen": null,
     "transposition_table_enabled": false,
@@ -70,5 +74,7 @@
         "eval_threshold": 0.01,
         "min_games": 1
     },
-    "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here."
+    "predictive_time_management_enabled": true,
+    "predictive_time_safety_factor": 0.8,
+    "description": "Standard evaluation weights for handcrafted evaluator with mobility and king safety. Search depth and quiescence settings are also configured here. Predictive time management uses shallow search statistics to predict optimal starting depth."
 }

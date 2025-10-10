@@ -182,6 +182,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.cached_kingside_castling_right_penalty = self.config.get("kingside_castling_right_penalty", -15)
         self.cached_queenside_castling_right_penalty = self.config.get("queenside_castling_right_penalty", -12)
         
+        # Cache pawn structure settings
+        self.cached_pawn_structure_enabled = self.config.get("pawn_structure_enabled", True)
+        self.cached_pawn_islands_weight = self.config.get("pawn_islands_weight", 0.1)
+        self.cached_passed_pawn_bonus = self.config.get("passed_pawn_bonus", 20)
+        
         # Cache mobility enabled settings
         mobility_enabled = self.config.get("mobility_enabled", {})
         self.mobility_enabled = {
@@ -224,8 +229,8 @@ class HandcraftedEvaluator(BaseEvaluator):
             4, 4, 8, 15, 15, 8, 4, 4,  # 3rd rank - center control
             2, 2, 6, 12, 12, 6, 2, 2,  # 4th rank - center control
             2, 2, 4, 12, 12, 4, 2, 2,    # 5th rank - center control
-            12, 12, 12, 12, 12, 12, 12, 12,    # 6th rank - all good for advancement
-            30, 30, 30, 30, 30, 30, 30, 30,    # 7th rank - all good for advancement
+            15, 15, 15, 15, 15, 15, 15, 15,    # 6th rank - all good for advancement
+            50, 50, 50, 50, 50, 50, 50, 50,    # 7th rank - all good for advancement
             0, 0, 0, 0, 0, 0, 0, 0     # 8th rank
         ]
         
@@ -457,13 +462,18 @@ class HandcraftedEvaluator(BaseEvaluator):
             king_safety_score = self._evaluate_king_safety(board)
             weighted_king_safety = self.cached_king_safety_weight * king_safety_score
         
-        total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety
+        # Add pawn structure evaluation for both middlegame and endgame
+        pawn_structure_score = self._evaluate_pawn_structure(board)
+        weighted_pawn_structure = self.cached_pawn_islands_weight * pawn_structure_score
+        
+        total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety + weighted_pawn_structure
         
         return {
             'material': round(weighted_material, 3),
             'positional': round(weighted_position, 3),
             'mobility': round(weighted_mobility, 3),
             'king_safety': round(weighted_king_safety, 3),
+            'pawn_structure': round(weighted_pawn_structure, 3),
             'total': round(total_score, 3)
         }
     
@@ -778,6 +788,194 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Return 1 only if all shield files have a pawn of our color
         return 1 if files_with_pawns == len(shield_files) else 0
     
+    def _evaluate_pawn_structure(self, board: chess.Board) -> float:
+        """
+        Evaluate pawn structure using pawn islands and passed pawns.
+        
+        Pawn islands are calculated by counting contiguous file gaps (files with no pawns).
+        The number of pawn islands = number of contiguous file gaps + 1.
+        Passed pawns are pawns with no opponent pawns in front on the same or adjacent files.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            Pawn structure score from White's perspective (fewer islands is better, more passed pawns is better)
+        """
+        # Check if pawn structure evaluation is enabled
+        if not self.cached_pawn_structure_enabled:
+            return 0.0
+        
+        # Precompute file occupancy for both colors (store bitboards, not just booleans)
+        white_files = [0] * 8  # Files a-h (0-7) - store bitboards
+        black_files = [0] * 8
+        
+        for file in range(8):
+            file_mask = chess.BB_FILES[file]
+            white_files[file] = board.pieces(chess.PAWN, chess.WHITE) & file_mask
+            black_files[file] = board.pieces(chess.PAWN, chess.BLACK) & file_mask
+        
+        # Calculate pawn islands and passed pawns using precomputed file information
+        white_islands, white_passed = self._analyze_pawn_structure_with_files(board, chess.WHITE, white_files, black_files)
+        black_islands, black_passed = self._analyze_pawn_structure_with_files(board, chess.BLACK, black_files, white_files)
+        
+        # Calculate scores
+        # Fewer islands is better, so we want (black_islands - white_islands)
+        islands_score = (black_islands - white_islands) * self.cached_pawn_islands_weight
+        
+        # More passed pawns is better, so we want (white_passed - black_passed)
+        passed_pawns_score = (white_passed - black_passed) * self.cached_passed_pawn_bonus
+        
+        return islands_score + passed_pawns_score
+    
+    def _analyze_pawn_structure_with_files(self, board: chess.Board, color: bool, our_files: list[bool], enemy_files: list[bool]) -> tuple[int, float]:
+        """
+        Analyze pawn structure using precomputed file occupancy information.
+        
+        Args:
+            board: Current board state
+            color: Color of the pawns to analyze (WHITE or BLACK)
+            our_files: Precomputed file occupancy for our color
+            enemy_files: Precomputed file occupancy for enemy color
+            
+        Returns:
+            Tuple of (island_count, passed_pawn_count) where passed_pawn_count can be fractional
+        """
+        # Count islands using precomputed file information
+        islands = 0
+        last_file_with_pawns = -1
+        has_any_pawns = False
+        
+        for file in range(8):
+            if our_files[file]:
+                has_any_pawns = True
+                # Check for island gap
+                if last_file_with_pawns != -1 and file - last_file_with_pawns > 1:
+                    islands += 1
+                last_file_with_pawns = file
+        
+        # Number of islands = number of gaps + 1
+        islands = islands + 1 if has_any_pawns else 0
+        
+        # Count passed pawns using precomputed file information
+        passed_pawns = 0
+        
+        for file in range(8):
+            our_pawns_on_file = our_files[file]  # Use precomputed bitboard
+            if not our_pawns_on_file:
+                continue
+                
+            # Check if the most advanced pawn on this file is passed
+            # Find the most advanced pawn on this file
+            most_advanced_rank = -1
+            most_advanced_square = None
+            
+            for square in our_pawns_on_file:
+                rank = chess.square_rank(square)
+                if color == chess.WHITE:
+                    # For white, higher rank is more advanced
+                    if rank > most_advanced_rank:
+                        most_advanced_rank = rank
+                        most_advanced_square = square
+                else:
+                    # For black, lower rank is more advanced
+                    if rank < most_advanced_rank or most_advanced_rank == -1:
+                        most_advanced_rank = rank
+                        most_advanced_square = square
+            
+            if most_advanced_square is not None:
+                # Skip passed pawn calculation if pawn is too far from promotion
+                if color == chess.WHITE:
+                    if most_advanced_rank < 4:  # Rank 4 or lower (0-indexed: rank 3 or lower)
+                        continue
+                else:
+                    if most_advanced_rank > 3:  # Rank 5 or higher (0-indexed: rank 4 or higher)
+                        continue
+                
+                # Check if the most advanced pawn is passed
+                is_passed = True
+                
+                # Check adjacent files for enemy pawns
+                for check_file in range(max(0, file - 1), min(8, file + 2)):
+                    if not enemy_files[check_file]:
+                        continue
+                        
+                    # Check if any enemy pawn on this file is in front of our pawn
+                    for enemy_square in enemy_files[check_file]:
+                        enemy_rank = chess.square_rank(enemy_square)
+                        
+                        if color == chess.WHITE:
+                            # White pawn: enemy pawn is in front if it's on a higher rank
+                            if enemy_rank > most_advanced_rank:
+                                is_passed = False
+                                break
+                        else:
+                            # Black pawn: enemy pawn is in front if it's on a lower rank
+                            if enemy_rank < most_advanced_rank:
+                                is_passed = False
+                                break
+                    if not is_passed:
+                        break
+                
+                # Note: Multiple pawns same file count as at most one passed pawn
+                # Weight passed pawns by how far advanced they are
+                if is_passed:
+                    if color == chess.WHITE:
+                        # White pawns: rank 6+ = full value, rank 5 = half value, rank 4- = skip
+                        if most_advanced_rank >= 5:  # Rank 6 or higher (0-indexed: rank 5+)
+                            passed_pawns += 1.0
+                        elif most_advanced_rank == 4:  # Rank 5 (0-indexed: rank 4)
+                            passed_pawns += 0.5
+                        # Rank 3 and below (ranks 4 and below) are skipped
+                    else:
+                        # Black pawns: rank 3- = full value, rank 4 = half value, rank 5+ = skip
+                        if most_advanced_rank <= 2:  # Rank 3 or lower (0-indexed: rank 2-)
+                            passed_pawns += 1.0
+                        elif most_advanced_rank == 3:  # Rank 4 (0-indexed: rank 3)
+                            passed_pawns += 0.5
+                        # Rank 4 and above (ranks 5 and above) are skipped
+        
+        return islands, passed_pawns
+    
+    def _count_pawn_islands(self, board: chess.Board, color: bool) -> int:
+        """
+        Count the number of pawn islands for a given color using efficient bitboard operations.
+        
+        A pawn island is a group of contiguous files that contain pawns.
+        Files with no pawns create gaps between islands.
+        
+        Args:
+            board: Current board state
+            color: Color of the pawns to count (WHITE or BLACK)
+            
+        Returns:
+            Number of pawn islands for the given color
+        """
+        # Get all pawns of the given color using bitboard operations
+        pawns_bb = board.pieces(chess.PAWN, color)
+        
+        # If no pawns, return 0 islands
+        if not pawns_bb:
+            return 0
+        
+        # Count gaps in a single pass through files
+        gaps = 0
+        last_file_with_pawns = -1  # Track the last file that had pawns
+        
+        for file in range(8):  # Files a-h (0-7)
+            file_mask = chess.BB_FILES[file]  # Bitboard mask for this file
+            current_file_has_pawns = bool(pawns_bb & file_mask)
+            
+            if current_file_has_pawns:
+                # If we've seen pawns before and there's a gap, count it
+                if last_file_with_pawns != -1 and file - last_file_with_pawns > 1:
+                    gaps += 1
+                last_file_with_pawns = file
+        
+        # Number of islands = number of gaps + 1
+        # This works because: 1 island = 0 gaps, 2 islands = 1 gap, etc.
+        return gaps + 1
+    
     def _evaluate_piece_mobility(self, board: chess.Board, piece_type: int, color: bool, 
                                 friendly_pieces: int, enemy_pieces: int) -> float:
         """
@@ -905,12 +1103,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         material_score = self._evaluate_material(board)
         positional_score = self._evaluate_positional(board, is_endgame=True)
         mobility_score = self._evaluate_mobility(board)
+        pawn_structure_score = self._evaluate_pawn_structure(board)
         
         # Apply endgame-specific weights
         total_score = (
             material_weight * material_score +
             positional_weight * positional_score +
-            mobility_weight * mobility_score
+            mobility_weight * mobility_score +
+            self.cached_pawn_islands_weight * pawn_structure_score
         )
         
         return total_score
@@ -930,13 +1130,15 @@ class HandcraftedEvaluator(BaseEvaluator):
         positional_score = self._evaluate_positional(board, is_endgame=False)
         mobility_score = self._evaluate_mobility(board)
         king_safety_score = self._evaluate_king_safety(board)
+        pawn_structure_score = self._evaluate_pawn_structure(board)
         
         # Use cached standard weights for performance
         total_score = (
             self.cached_material_weight * material_score +
             self.cached_positional_weight * positional_score +
             self.cached_mobility_weight * mobility_score +
-            self.cached_king_safety_weight * king_safety_score
+            self.cached_king_safety_weight * king_safety_score +
+            self.cached_pawn_islands_weight * pawn_structure_score
         )
         
         return total_score
