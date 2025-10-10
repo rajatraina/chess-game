@@ -1,7 +1,7 @@
 {
     "material_weight": 1.0,
     "positional_weight": 0.15,
-    "mobility_weight": 0.3,
+    "mobility_weight": 0.35,
     "mobility_evaluation_mode": "adaptive",
     "mobility_weights": {
         "knight": 3,

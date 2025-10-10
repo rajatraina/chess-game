@@ -432,11 +432,17 @@ class MinimaxEngine(Engine):
         # Calculate shallow search statistics for predictive time management
         shallow_nodes = self.nodes_searched - original_nodes
         shallow_moves = len(legal_moves)
+        # Use piece count from evaluator if available, otherwise fall back to board calculation
+        if hasattr(self.evaluation_manager.evaluator, 'starting_piece_count') and self.evaluation_manager.evaluator.starting_piece_count is not None:
+            num_pieces = self.evaluation_manager.evaluator.starting_piece_count
+        else:
+            num_pieces = chess.popcount(board.occupied)
         # Use overall search start time to show time since move calculation began
         total_elapsed_time = time.time() - self.search_start_time
         shallow_search_stats = {
             'nodes': shallow_nodes,
-            'moves': shallow_moves
+            'moves': shallow_moves,
+            'num_pieces': num_pieces
         }
         
         # Log shallow search statistics and move order
@@ -1537,53 +1543,51 @@ class MinimaxEngine(Engine):
         self.killer_moves_stored = 0
         self.killer_moves_used = 0
 
-    def predict_time(self, nodes: int, moves: int) -> dict[int, float]:
+    def predict_time(self, nodes: int, moves: int, num_pieces: int) -> dict[int, float]:
         """
-        Predict search time for different depths based on nodes and moves from shallow search.
+        Predict search time for different depths based on nodes, moves, and piece count from shallow search.
         
         Args:
             nodes: Number of nodes searched in shallow search
             moves: Number of moves evaluated in shallow search
+            num_pieces: Number of pieces on the board
             
         Returns:
             Dictionary mapping depth to predicted time in seconds
         """
-        # Trained on all successful logs; asymmetric loss (underestimates ×2)
-        # Base (depth 3): t3 ≈ a*nodes + b*moves + c
-        a, b, c = 3.7553488e-04, 8.7297724e-03, -3.1391132e-02
-        # Multiplicative growth factors for +2 plies (3→5, 5→7)
-        r35, r57 = 4.4461542, 7.7833396
-        t3 = max(0.0, a * nodes + b * moves + c)
+        # Depth-3 base with pieces (censored-aware & asymmetric-trained; underestimates ×2; timeouts as lower bounds)
+        a, b, p, c = 0.00030074839, -0.006088846, 0.096233457, -1.1406804
+        r35, r57 = 8.6743051, 2.2311444  # 3→5, then 5→7
+        t3 = max(0.0, a*nodes + b*moves + p*num_pieces + c)
 
         # Illustrative results from this model:
-        # 1,000 nodes, 5 moves   -> t3=0.39s,  t5=1.72s,   t7=13.42s
-        # 5,000 nodes, 30 moves  -> t3=2.11s,  t5=9.37s,   t7=72.96s
-        # 15,000 nodes, 35 moves -> t3=5.91s,  t5=26.26s,  t7=204.42s
-        # 40,000 nodes, 40 moves -> t3=15.34s, t5=68.20s,  t7=530.83s
-        # 100,000 nodes, 60 moves-> t3=38.05s, t5=169.16s, t7=1316.61s
+        # nodes=1,000, moves=5,  pieces=32 -> t3=2.21s, t5=19.16s, t7=42.75s
+        # nodes=5,000, moves=30, pieces=32 -> t3=3.26s, t5=28.28s, t7=63.09s
+        # nodes=5,920, moves=36, pieces=31 -> t3=3.40s, t5=29.53s, t7=65.88s
 
-        return {3: t3, 5: t3 * r35, 7: t3 * r35 * r57}
+        return {3: t3, 5: t3*r35, 7: t3*r35*r57}
 
     def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget):
         """
         Predict the optimal starting depth for iterative deepening based on shallow search results.
         
         Args:
-            shallow_search_stats: Dictionary with 'nodes' and 'moves' from shallow search
+            shallow_search_stats: Dictionary with 'nodes', 'moves', and 'num_pieces' from shallow search
             time_budget: Available time budget in seconds
             
         Returns:
             Optimal starting depth (3, 5, or 7)
         """
-        if not shallow_search_stats or 'nodes' not in shallow_search_stats or 'moves' not in shallow_search_stats:
+        if not shallow_search_stats or 'nodes' not in shallow_search_stats or 'moves' not in shallow_search_stats or 'num_pieces' not in shallow_search_stats:
             # Fallback to default if no shallow search stats available
             return self.evaluation_manager.evaluator.config.get("search_depth_starting", 3)
         
         nodes = shallow_search_stats['nodes']
         moves = shallow_search_stats['moves']
+        num_pieces = shallow_search_stats['num_pieces']
         
         # Get predicted times for different depths
-        predicted_times = self.predict_time(nodes, moves)
+        predicted_times = self.predict_time(nodes, moves, num_pieces)
         
         # Find the highest depth we can complete within the time budget
         # Use a safety factor to ensure we don't exceed the budget
@@ -1599,7 +1603,7 @@ class MinimaxEngine(Engine):
                 break
         
         if not self.quiet:
-            self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}")
+            self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}, pieces={num_pieces}")
             self.logger.log_info(f"Predicted times: depth 3={predicted_times[3]:.2f}s, depth 5={predicted_times[5]:.2f}s, depth 7={predicted_times[7]:.2f}s")
             self.logger.log_info(f"Time budget: {time_budget:.2f}s, available: {available_time:.2f}s, optimal depth: {optimal_depth}")
         
