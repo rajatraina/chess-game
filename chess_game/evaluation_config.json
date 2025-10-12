@@ -48,7 +48,7 @@
     "repetition_evaluation": 0,
     "winning_endgame_threshold": 1000,
     "quiescence_additional_depth_limit": 4,
-    "quiescence_additional_depth_limit_shallow_search": 2,
+    "quiescence_additional_depth_limit_shallow_search": 1,
     "quiescence_include_checks": true,
     "quiescence_include_queen_defense": false,
     "quiescence_include_value_threshold": false,

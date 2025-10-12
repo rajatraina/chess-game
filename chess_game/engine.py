@@ -197,30 +197,14 @@ class MinimaxEngine(Engine):
             eval_score, line, status = self._quiescence_shallow(board, alpha, beta, 0)
             return eval_score, line, status
         
-        # Check if position is in tablebase for perfect evaluation
-        if self.tablebase and self.is_tablebase_position(board):
-            try:
-                wdl = self.tablebase.get_wdl(board)
-                if wdl is not None:
-                    # Convert WDL to evaluation score
-                    if wdl == 2:  # Win
-                        return 100000, [], SearchStatus.COMPLETE
-                    elif wdl == 1:  # Cursed win
-                        return 50000, [], SearchStatus.COMPLETE
-                    elif wdl == 0:  # Draw
-                        return 0, [], SearchStatus.COMPLETE
-                    elif wdl == -1:  # Blessed loss
-                        return -50000, [], SearchStatus.COMPLETE
-                    elif wdl == -2:  # Loss
-                        return -100000, [], SearchStatus.COMPLETE
-            except Exception:
-                pass
+        # Skip tablebase lookup for shallow search - we want speed, not perfect evaluation
         
         # Get sorted moves for this shallow search
         # Calculate absolute depth from root for killer move lookup
         absolute_depth = self.depth - depth
+
         sorted_moves = self._get_sorted_moves_optimized(board, absolute_depth)
-        
+
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
         
@@ -236,13 +220,10 @@ class MinimaxEngine(Engine):
                 board.pop()
                 return None, [], SearchStatus.PARTIAL
             
-            # Undo the move
-            board.pop()
-            
-            # Apply repetition penalty/bonus logic (same as in _minimax)
-            # Check if this move leads to a 3-fold repetition
-            board.push(move)
+            # Check for repetition while the move is still made
             repetition_after_move = board.is_repetition()
+            
+            # Undo the move
             board.pop()
             
             if repetition_after_move:
@@ -1813,30 +1794,22 @@ class MinimaxEngine(Engine):
         # Generate legal moves once
         legal_moves = list(board.legal_moves)
         
-        # Categorize moves in a single pass
-        captures = []
-        checks = []
-        defensive_moves = []
+        # Build moves_to_search directly in a single pass
+        moves_to_search = []
         
         for move in legal_moves:
             is_capture = board.is_capture(move)
             
             if is_capture:
                 # Always include captures
-                captures.append(move)
+                moves_to_search.append(move)
             else:
                 # Check if this non-capture move gives check (only if checks are enabled)
-                if self.quiescence_include_checks:
-                    if board.is_into_check(move):
-                        checks.append(move)
-                
+                if self.quiescence_include_checks and board.is_into_check(move):
+                    moves_to_search.append(move)
                 # Check if this is a defensive move (only if defensive moves are enabled)
-                if self.quiescence_include_queen_defense or self.quiescence_include_value_threshold:
-                    if self._is_defensive_move_fast(board, move):
-                        defensive_moves.append(move)
-        
-        # Combine all moves
-        moves_to_search = captures + checks + defensive_moves
+                elif (self.quiescence_include_queen_defense or self.quiescence_include_value_threshold) and self._is_defensive_move_fast(board, move):
+                    moves_to_search.append(move)
         return moves_to_search
     
     def _is_defensive_move_fast(self, board, move):

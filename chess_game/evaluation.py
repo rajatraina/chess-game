@@ -187,6 +187,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.cached_pawn_islands_weight = self.config.get("pawn_islands_weight", 0.1)
         self.cached_passed_pawn_bonus = self.config.get("passed_pawn_bonus", 20)
         
+        # Cache game over condition values
+        self.cached_draw_value = self.config.get("draw_value", 0)
+        self.cached_checkmate_bonus = self.config.get("checkmate_bonus", 100000)
+        
         # Cache mobility enabled settings
         mobility_enabled = self.config.get("mobility_enabled", {})
         self.mobility_enabled = {
@@ -358,13 +362,13 @@ class HandcraftedEvaluator(BaseEvaluator):
             return self._evaluate_checkmate(board)
         
         if board.is_stalemate() or board.is_insufficient_material():
-            return self.config["draw_value"]
+            return self.cached_draw_value
         
         if board.is_repetition(3):
-            return self.config["draw_value"]
+            return self.cached_draw_value
         
         if board.halfmove_clock >= 100:  # Fifty-move rule
-            return self.config["draw_value"]
+            return self.cached_draw_value
         
         
         # Check if this should use endgame evaluation based on starting position
@@ -403,7 +407,7 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
-                'total': round(self.config["draw_value"], 2)
+                'total': round(self.cached_draw_value, 2)
             }
         
         if board.is_repetition(3):
@@ -411,7 +415,7 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
-                'total': round(self.config["draw_value"], 2)
+                'total': round(self.cached_draw_value, 2)
             }
         
         if board.halfmove_clock >= 100:  # Fifty-move rule
@@ -419,7 +423,7 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
-                'total': round(self.config["draw_value"], 2)
+                'total': round(self.cached_draw_value, 2)
             }
         
         # Check if this should use endgame evaluation based on starting position
@@ -480,6 +484,10 @@ class HandcraftedEvaluator(BaseEvaluator):
     def _evaluate_material(self, board: chess.Board) -> float:
         """Evaluate material balance using optimized bitboard operations with simplification logic"""
         
+        # Hoist frequently accessed attributes to locals for performance
+        piece_values = self.piece_values
+        cached_bishop_pair_bonus = self.cached_bishop_pair_bonus
+        
         material_score = 0
         
         # Cache bishop counts for reuse
@@ -489,14 +497,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Calculate total material on board for simplification
         total_material_on_board = 0
         
-        for piece_type in self.piece_values:
+        for piece_type in piece_values:
             # Use bitboard operations instead of len() for better performance
             white_bb = board.pieces(piece_type, chess.WHITE)
             black_bb = board.pieces(piece_type, chess.BLACK)
             white_count = chess.popcount(white_bb)
             black_count = chess.popcount(black_bb)
             
-            piece_value = self.piece_values[piece_type]
+            piece_value = piece_values[piece_type]
             material_score += white_count * piece_value
             material_score -= black_count * piece_value
             
@@ -509,11 +517,10 @@ class HandcraftedEvaluator(BaseEvaluator):
                 black_bishops = black_count
         
         # Add bishop pair bonus using cached counts
-        bishop_pair_bonus = self.cached_bishop_pair_bonus
         if white_bishops >= 2:
-            material_score += bishop_pair_bonus
+            material_score += cached_bishop_pair_bonus
         if black_bishops >= 2:
-            material_score -= bishop_pair_bonus
+            material_score -= cached_bishop_pair_bonus
         
         # Material simplification logic for winning positions
         # Apply simplification when the engine's side (starting side to move) is winning
@@ -771,19 +778,9 @@ class HandcraftedEvaluator(BaseEvaluator):
         else:  # King is on d file (center) - no pawn shield
             return 0
         
-        # Check if each shield file has at least one pawn of our color
-        files_with_pawns = 0
-        for file in shield_files:
-            has_pawn = False
-            # Check all ranks for pawns in this file
-            for rank in range(8):
-                square = chess.square(file, rank)
-                piece = board.piece_at(square)
-                if piece and piece.piece_type == chess.PAWN and piece.color == color:
-                    has_pawn = True
-                    break
-            if has_pawn:
-                files_with_pawns += 1
+        # Use bitboard operations instead of piece_at() loops for better performance
+        our_pawns = board.pieces(chess.PAWN, color)
+        files_with_pawns = sum(1 for file in shield_files if our_pawns & chess.BB_FILES[file])
         
         # Return 1 only if all shield files have a pawn of our color
         return 1 if files_with_pawns == len(shield_files) else 0
@@ -807,13 +804,16 @@ class HandcraftedEvaluator(BaseEvaluator):
             return 0.0
         
         # Precompute file occupancy for both colors (store bitboards, not just booleans)
+        # Use direct bitboard operations for better performance
+        white_pawns = board.pawns & board.occupied_co[chess.WHITE]
+        black_pawns = board.pawns & board.occupied_co[chess.BLACK]
         white_files = [0] * 8  # Files a-h (0-7) - store bitboards
         black_files = [0] * 8
         
         for file in range(8):
             file_mask = chess.BB_FILES[file]
-            white_files[file] = board.pieces(chess.PAWN, chess.WHITE) & file_mask
-            black_files[file] = board.pieces(chess.PAWN, chess.BLACK) & file_mask
+            white_files[file] = white_pawns & file_mask
+            black_files[file] = black_pawns & file_mask
         
         # Calculate pawn islands and passed pawns using precomputed file information
         white_islands, white_passed = self._analyze_pawn_structure_with_files(board, chess.WHITE, white_files, black_files)
@@ -870,7 +870,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             most_advanced_rank = -1
             most_advanced_square = None
             
-            for square in our_pawns_on_file:
+            for square in chess.scan_forward(our_pawns_on_file):
                 rank = chess.square_rank(square)
                 if color == chess.WHITE:
                     # For white, higher rank is more advanced
@@ -901,7 +901,7 @@ class HandcraftedEvaluator(BaseEvaluator):
                         continue
                         
                     # Check if any enemy pawn on this file is in front of our pawn
-                    for enemy_square in enemy_files[check_file]:
+                    for enemy_square in chess.scan_forward(enemy_files[check_file]):
                         enemy_rank = chess.square_rank(enemy_square)
                         
                         if color == chess.WHITE:
@@ -936,45 +936,6 @@ class HandcraftedEvaluator(BaseEvaluator):
                         # Rank 4 and above (ranks 5 and above) are skipped
         
         return islands, passed_pawns
-    
-    def _count_pawn_islands(self, board: chess.Board, color: bool) -> int:
-        """
-        Count the number of pawn islands for a given color using efficient bitboard operations.
-        
-        A pawn island is a group of contiguous files that contain pawns.
-        Files with no pawns create gaps between islands.
-        
-        Args:
-            board: Current board state
-            color: Color of the pawns to count (WHITE or BLACK)
-            
-        Returns:
-            Number of pawn islands for the given color
-        """
-        # Get all pawns of the given color using bitboard operations
-        pawns_bb = board.pieces(chess.PAWN, color)
-        
-        # If no pawns, return 0 islands
-        if not pawns_bb:
-            return 0
-        
-        # Count gaps in a single pass through files
-        gaps = 0
-        last_file_with_pawns = -1  # Track the last file that had pawns
-        
-        for file in range(8):  # Files a-h (0-7)
-            file_mask = chess.BB_FILES[file]  # Bitboard mask for this file
-            current_file_has_pawns = bool(pawns_bb & file_mask)
-            
-            if current_file_has_pawns:
-                # If we've seen pawns before and there's a gap, count it
-                if last_file_with_pawns != -1 and file - last_file_with_pawns > 1:
-                    gaps += 1
-                last_file_with_pawns = file
-        
-        # Number of islands = number of gaps + 1
-        # This works because: 1 island = 0 gaps, 2 islands = 1 gap, etc.
-        return gaps + 1
     
     def _evaluate_piece_mobility(self, board: chess.Board, piece_type: int, color: bool, 
                                 friendly_pieces: int, enemy_pieces: int) -> float:
@@ -1151,9 +1112,9 @@ class HandcraftedEvaluator(BaseEvaluator):
         # So if board.turn is True, White is checkmated (good for Black)
         # If board.turn is False, Black is checkmated (good for White)
         if board.turn:  # White is checkmated (good for Black)
-            return -(self.config["checkmate_bonus"] - distance_to_mate)
+            return -(self.cached_checkmate_bonus - distance_to_mate)
         else:  # Black is checkmated (good for White)
-            return self.config["checkmate_bonus"] - distance_to_mate
+            return self.cached_checkmate_bonus - distance_to_mate
     
     def get_name(self) -> str:
         return "HandcraftedEvaluator"
