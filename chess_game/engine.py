@@ -96,6 +96,16 @@ class MinimaxEngine(Engine):
         # Load move ordering parameters
         self.moveorder_shallow_search_depth = self.evaluation_manager.evaluator.config.get("moveorder_shallow_search_depth", 2)
         
+        # MVV-LVA piece values for capture move ordering (defined once at initialization)
+        self.mvv_lva_values = {
+            chess.PAWN: 1,
+            chess.KNIGHT: 2,
+            chess.BISHOP: 3,
+            chess.ROOK: 4,
+            chess.QUEEN: 5,
+            chess.KING: 6
+        }
+        
         # Load time budget parameters
         self.time_budget_check_frequency = self.evaluation_manager.evaluator.config.get("time_budget_check_frequency", 1000)
         self.time_budget_early_exit_enabled = self.evaluation_manager.evaluator.config.get("time_budget_early_exit_enabled", True)
@@ -1398,25 +1408,15 @@ class MinimaxEngine(Engine):
         Returns:
             Capture value for sorting
         """
-        victim_piece = board.piece_at(move.to_square)
-        attacker_piece = board.piece_at(move.from_square)
+        victim_piece_type = board.piece_type_at(move.to_square)
+        attacker_piece_type = board.piece_type_at(move.from_square)
         
-        if victim_piece is None or attacker_piece is None:
+        if victim_piece_type is None or attacker_piece_type is None:
             return 0
-        
-        # Piece values for MVV-LVA (different from evaluation values)
-        piece_values = {
-            chess.PAWN: 1,
-            chess.KNIGHT: 2,
-            chess.BISHOP: 3,
-            chess.ROOK: 4,
-            chess.QUEEN: 5,
-            chess.KING: 6
-        }
         
         # MVV-LVA: Most Valuable Victim - Least Valuable Attacker
         # Higher values = more promising captures
-        return piece_values[victim_piece.piece_type] * 10 - piece_values[attacker_piece.piece_type]
+        return self.mvv_lva_values[victim_piece_type] * 10 - self.mvv_lva_values[attacker_piece_type]
     
 
     

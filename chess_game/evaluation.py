@@ -17,6 +17,17 @@ import os
 import numpy as np
 
 
+# Mapping from piece type to board bitboard attribute for efficient direct access
+PIECE_TYPE_TO_BITBOARD = {
+    chess.PAWN: lambda b: b.pawns,
+    chess.KNIGHT: lambda b: b.knights,
+    chess.BISHOP: lambda b: b.bishops,
+    chess.ROOK: lambda b: b.rooks,
+    chess.QUEEN: lambda b: b.queens,
+    chess.KING: lambda b: b.kings,
+}
+
+
 class BaseEvaluator(ABC):
     """Abstract base class for chess position evaluators"""
     
@@ -498,9 +509,9 @@ class HandcraftedEvaluator(BaseEvaluator):
         total_material_on_board = 0
         
         for piece_type in piece_values:
-            # Use bitboard operations instead of len() for better performance
-            white_bb = board.pieces(piece_type, chess.WHITE)
-            black_bb = board.pieces(piece_type, chess.BLACK)
+            # Use direct bitboard access for better performance
+            white_bb = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.WHITE]
+            black_bb = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.BLACK]
             white_count = chess.popcount(white_bb)
             black_count = chess.popcount(black_bb)
             
@@ -562,16 +573,16 @@ class HandcraftedEvaluator(BaseEvaluator):
         positional_score = 0
         
         for piece_type in tables:
-            # Use bitboard iteration for better performance
-            white_squares = board.pieces(piece_type, chess.WHITE)
-            black_squares = board.pieces(piece_type, chess.BLACK)
+            # Use direct bitboard access for better performance
+            white_squares = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.WHITE]
+            black_squares = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.BLACK]
             
             # Add positional bonuses for White pieces
-            for square in white_squares:
+            for square in chess.scan_forward(white_squares):
                 positional_score += tables[piece_type][square]
             
             # Subtract positional bonuses for Black pieces (use cached mirror mapping)
-            for square in black_squares:
+            for square in chess.scan_forward(black_squares):
                 positional_score -= tables[piece_type][self.cached_square_mirror[square]]
         
         # Note: Mobility and king safety are handled separately in evaluate_with_components
@@ -778,12 +789,37 @@ class HandcraftedEvaluator(BaseEvaluator):
         else:  # King is on d file (center) - no pawn shield
             return 0
         
-        # Use bitboard operations instead of piece_at() loops for better performance
-        our_pawns = board.pieces(chess.PAWN, color)
-        files_with_pawns = sum(1 for file in shield_files if our_pawns & chess.BB_FILES[file])
+        # Create rank mask for pawn shield ranks (more realistic evaluation)
+        if color == chess.WHITE:
+            # White pawns: ranks 1-2 (2nd and 3rd ranks, 0-indexed)
+            shield_ranks = chess.BB_RANK_2 | chess.BB_RANK_3
+        else:
+            # Black pawns: ranks 5-6 (6th and 7th ranks, 0-indexed)
+            shield_ranks = chess.BB_RANK_6 | chess.BB_RANK_7
         
-        # Return 1 only if all shield files have a pawn of our color
-        return 1 if files_with_pawns == len(shield_files) else 0
+        # Use direct bitboard access and apply shield_ranks filter once
+        our_pawns = board.pawns & board.occupied_co[color] & shield_ranks
+        
+        # Check each shield file for pawns on the correct ranks
+        # Use boolean array indexed by shield file positions for efficiency
+        files_with_pawns = [False] * 3  # shield_files is always length 3
+        num_files_with_pawns = 0
+        for i, file in enumerate(shield_files):
+            file_mask = chess.BB_FILES[file]
+            has_pawn = bool(our_pawns & file_mask)
+            if has_pawn:
+                files_with_pawns[i] = True
+                num_files_with_pawns += 1
+        
+        # New scoring system:
+        # - Return 1 if all three shield files have pawns
+        # - Return 0.5 if middle file + one other file has pawns
+        # - Return 0 otherwise
+        if num_files_with_pawns == 3:
+            return 1.0  # All shield files covered
+        elif files_with_pawns[1] and num_files_with_pawns == 2:
+            return 0.5  # Middle file + one other file covered
+        return 0.0  # Less than 2 files or middle file not covered
     
     def _evaluate_pawn_structure(self, board: chess.Board) -> float:
         """
@@ -953,7 +989,8 @@ class HandcraftedEvaluator(BaseEvaluator):
             Quality-weighted mobility score for this piece type and color
         """
         mobility_score = 0
-        piece_squares = board.pieces(piece_type, color)
+        # Use direct bitboard access for better performance
+        piece_squares = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[color]
         
         # Early exit if no pieces of this type
         if not piece_squares:
@@ -967,8 +1004,13 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Use cached central squares bitboard
         central_squares = self.cached_central_squares
         
+        # Create pawn bitboards only for rook evaluation (cleaner approach)
+        if piece_type == chess.ROOK:
+            white_pawns_bb = board.pawns & board.occupied_co[chess.WHITE]
+            black_pawns_bb = board.pawns & board.occupied_co[chess.BLACK]
+        
         # Use quality-based mobility calculation
-        for square in piece_squares:
+        for square in chess.scan_forward(piece_squares):
             if piece_type == chess.KNIGHT:
                 # Use knight attack bitboard (integer)
                 attacks = chess.BB_KNIGHT_ATTACKS[square]
@@ -982,27 +1024,13 @@ class HandcraftedEvaluator(BaseEvaluator):
                 mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
                 
             elif piece_type == chess.BISHOP:
-                # Use diagonal attacks with proper handling
+                # Use diagonal attacks with magic bitboard lookup
                 diag_attacks = chess.BB_DIAG_ATTACKS[square]
-                if isinstance(diag_attacks, dict):
-                    # Handle dictionary format - get exact attack bitboard for current occupancy
-                    diagonal_occupancy = board.occupied & chess.BB_DIAG_MASKS[square]
-                    if diagonal_occupancy in diag_attacks:
-                        attack_bitboard = diag_attacks[diagonal_occupancy]
-                        legal_moves = attack_bitboard & ~friendly_pieces
-                        
-                        # Weight moves by square importance
-                        central_moves = legal_moves & central_squares
-                        regular_moves = legal_moves & ~central_squares
-                        
-                        mobility_score += chess.popcount(central_moves) * weight * central_multiplier
-                        mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
-                    else:
-                        # Fallback to approximation if pattern not found
-                        mobility_score += weight * 3  # Default approximation
-                else:
-                    # Handle integer format
-                    legal_moves = diag_attacks & ~friendly_pieces
+                # Get exact attack bitboard for current occupancy
+                diagonal_occupancy = board.occupied & chess.BB_DIAG_MASKS[square]
+                if diagonal_occupancy in diag_attacks:
+                    attack_bitboard = diag_attacks[diagonal_occupancy]
+                    legal_moves = attack_bitboard & ~friendly_pieces
                     
                     # Weight moves by square importance
                     central_moves = legal_moves & central_squares
@@ -1010,6 +1038,9 @@ class HandcraftedEvaluator(BaseEvaluator):
                     
                     mobility_score += chess.popcount(central_moves) * weight * central_multiplier
                     mobility_score += chess.popcount(regular_moves) * weight * regular_multiplier
+                else:
+                    # Fallback to approximation if pattern not found
+                    mobility_score += weight * 3  # Default approximation
                     
             elif piece_type == chess.ROOK:
                 # Simplified rook mobility: evaluate file control
@@ -1019,26 +1050,26 @@ class HandcraftedEvaluator(BaseEvaluator):
                 # Check if file is open (no pawns) or half-open (only enemy pawns)
                 if color == chess.WHITE:
                     # White rook: check if file is open or half-open for White
-                    white_pawns_on_file = board.pieces(chess.PAWN, chess.WHITE) & file_mask
+                    white_pawns_on_file = white_pawns_bb & file_mask
                     if not white_pawns_on_file:  # No white pawns on file
-                        black_pawns_on_file = board.pieces(chess.PAWN, chess.BLACK) & file_mask
+                        black_pawns_on_file = black_pawns_bb & file_mask
                         if not black_pawns_on_file:
                             # Open file (no pawns)
                             mobility_score += weight * 8  # High bonus for open file
                         else:
                             # Half-open file (only black pawns)
-                            mobility_score += weight * 4  # Moderate bonus for half-open file
+                            mobility_score += weight * 6  # Moderate bonus for half-open file
                 else:
                     # Black rook: check if file is open or half-open for Black
-                    black_pawns_on_file = board.pieces(chess.PAWN, chess.BLACK) & file_mask
+                    black_pawns_on_file = black_pawns_bb & file_mask
                     if not black_pawns_on_file:  # No black pawns on file
-                        white_pawns_on_file = board.pieces(chess.PAWN, chess.WHITE) & file_mask
+                        white_pawns_on_file = white_pawns_bb & file_mask
                         if not white_pawns_on_file:
                             # Open file (no pawns)
                             mobility_score += weight * 8  # High bonus for open file
                         else:
                             # Half-open file (only white pawns)
-                            mobility_score += weight * 4  # Moderate bonus for half-open file
+                            mobility_score += weight * 6  # Moderate bonus for half-open file
                     
 
         
