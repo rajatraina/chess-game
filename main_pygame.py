@@ -4,6 +4,10 @@ import chess.syzygy
 import sys
 import argparse
 
+# To run on lichess, do this:
+# caffeinate -i python3 lichess-bot.py -v
+
+
 def check_tablebases():
     """Check if Syzygy tablebases are available"""
     print("🔍 Checking for endgame tablebases...")
