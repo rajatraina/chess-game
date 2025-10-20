@@ -28,7 +28,7 @@ class SpeedTester:
         engine.opening_book = None  # Disable opening book
         
         # Use the specified FEN position
-        test_fen = "r2qkb1r/5pp1/p1n1pn2/1p1p2B1/B2P2b1/2N2N2/PP2QPPP/R4RK1 b kq - 1 10"
+        test_fen = "r1b1kb1r/1p3p2/q3p3/p1ppPn2/3P2p1/P1NPB1Pp/1PRNQP1P/5RK1 w kq - 0 21"
         board = chess.Board(test_fen)
         
         print(f"🎯 Test Position: {test_fen}")

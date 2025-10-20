@@ -170,7 +170,7 @@ class MinimaxEngine(Engine):
         # Ensure minimum time budget of 0.1 seconds
         return max(time_budget, 0.1)
     
-    def _shallow_search_with_quiescence(self, board, depth, alpha, beta):
+    def _shallow_search_with_quiescence(self, board, depth, alpha, beta, game_stage=None):
         """
         Perform a shallow search with limited quiescence for move ordering.
         
@@ -204,7 +204,7 @@ class MinimaxEngine(Engine):
         
         # Leaf node: use quiescence search
         if depth == 0:
-            eval_score, line, status = self._quiescence_shallow(board, alpha, beta, 0)
+            eval_score, line, status = self._quiescence_shallow(board, alpha, beta, 0, game_stage)
             return eval_score, line, status
         
         # Skip tablebase lookup for shallow search - we want speed, not perfect evaluation
@@ -223,7 +223,7 @@ class MinimaxEngine(Engine):
             board.push(move)
             
             # Search the resulting position
-            value, line, status = self._shallow_search_with_quiescence(board, depth - 1, alpha, beta)
+            value, line, status = self._shallow_search_with_quiescence(board, depth - 1, alpha, beta, game_stage)
             
             # If search was partial, propagate up immediately
             if status == SearchStatus.PARTIAL:
@@ -272,7 +272,7 @@ class MinimaxEngine(Engine):
         
         return best_value, best_line, SearchStatus.COMPLETE
     
-    def _quiescence_shallow(self, board, alpha, beta, depth=0):
+    def _quiescence_shallow(self, board, alpha, beta, depth=0, game_stage=None):
         """
         Limited quiescence search for shallow move ordering.
         
@@ -290,20 +290,27 @@ class MinimaxEngine(Engine):
         
         # Check for game over conditions
         if board.is_game_over():
-            return self.evaluate(board), [], SearchStatus.COMPLETE
+            return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
         
         # Limit quiescence depth
         # Calculate maximum quiescence depth as: shallow_search_depth + shallow_search_specific_depth_limit
         max_quiescence_depth = self.moveorder_shallow_search_depth + self.quiescence_additional_depth_limit_shallow_search
         if depth > max_quiescence_depth:
-            return self.evaluate(board), [], SearchStatus.COMPLETE
+            return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
         
         # Check if position is in check
         is_in_check = board.is_check()
         
-        # Evaluate current position (stand pat) - only if not in check
-        if not is_in_check:
-            stand_pat = self.evaluate(board)
+        if is_in_check:
+            # IN CHECK: Search ALL legal moves (must respond to check)
+            moves_to_search = list(board.legal_moves)
+            
+            if not moves_to_search:
+                # If in check and no legal moves, it's checkmate
+                return -100000 if board.turn else 100000, [], SearchStatus.COMPLETE
+        else:
+            # NOT IN CHECK: Evaluate stand pat and search captures/checks
+            stand_pat = self.evaluate(board, game_stage)
             
             # Alpha-beta pruning at quiescence level
             if board.turn:  # White to move: maximize
@@ -314,22 +321,12 @@ class MinimaxEngine(Engine):
                 if stand_pat <= alpha:
                     return alpha, [], SearchStatus.COMPLETE
                 beta = min(beta, stand_pat)
-        
-        # Determine which moves to search
-        if is_in_check: ## OR is_in_fork: (generate pieces that will be forked?)
-            # If in check, search ALL legal moves
-            moves_to_search = list(board.legal_moves)
-        else:
-            # If not in check, search captures and checks
+            
+            # Search captures and checks for tactical accuracy
             moves_to_search = self._get_quiescence_moves(board)
-        
-        if not moves_to_search:
-            if is_in_check:
-                # If in check and no legal moves, it's checkmate
-                return -100000 if board.turn else 100000, [], SearchStatus.COMPLETE
-            else:
+            
+            if not moves_to_search:
                 # If not in check and no captures/checks, return stand pat
-                stand_pat = self.evaluate(board)
                 return stand_pat, [], SearchStatus.COMPLETE
         
         best_line = []
@@ -340,7 +337,7 @@ class MinimaxEngine(Engine):
             board.push(move)
             
             # Recursive quiescence search
-            value, line, status = self._quiescence_shallow(board, alpha, beta, depth + 1)
+            value, line, status = self._quiescence_shallow(board, alpha, beta, depth + 1, game_stage)
             
             # If search was partial, propagate up immediately
             if status == SearchStatus.PARTIAL:
@@ -368,7 +365,7 @@ class MinimaxEngine(Engine):
         
         return (alpha if board.turn else beta), best_line, SearchStatus.COMPLETE
     
-    def _order_moves_with_shallow_search(self, board):
+    def _order_moves_with_shallow_search(self, board, game_stage=None):
         """
         Order moves using shallow search with limited quiescence.
         
@@ -398,7 +395,8 @@ class MinimaxEngine(Engine):
                 board, 
                 self.moveorder_shallow_search_depth - 1, 
                 -float('inf'), 
-                float('inf')
+                float('inf'),
+                game_stage
             )
             
             # If search was partial, skip this move
@@ -606,6 +604,12 @@ class MinimaxEngine(Engine):
         Returns:
             Best move found
         """
+        # Determine game stage once at root level for consistent evaluation throughout search
+        if hasattr(self.evaluation_manager.evaluator, '_determine_game_stage'):
+            game_stage = self.evaluation_manager.evaluator._determine_game_stage(board)
+        else:
+            game_stage = None  # Will be determined automatically in evaluate calls
+        
         # Get configuration parameters
         starting_depth = self.evaluation_manager.evaluator.config.get("search_depth_starting", 3)
         max_depth = self.evaluation_manager.evaluator.config.get("max_search_depth", 10)
@@ -621,11 +625,12 @@ class MinimaxEngine(Engine):
         best_move = None
         best_value = -float('inf') if board.turn else float('inf')
         best_line = []
-        previous_iteration_move_order = None  # Track full move order from previous iteration
+        previous_iteration_best_moves = []  # Track best moves from previous iteration for ordering
+        previous_iteration_move_order = []  # Track the complete move order from previous iteration
         
         # Phase 1: Perform shallow search for initial move ordering
         self.logger.log_info("Phase 1: Shallow search (depth 2) for move ordering...")
-        sorted_moves, shallow_search_stats = self._order_moves_with_shallow_search(board)
+        sorted_moves, shallow_search_stats = self._order_moves_with_shallow_search(board, game_stage)
         
         
         # Phase 2: Determine optimal starting depth using predictive time management
@@ -663,16 +668,19 @@ class MinimaxEngine(Engine):
             beta = float('inf')
             iteration_has_timeouts = False  # Track if any moves timed out
             first_completed_move = None  # Track if we got at least one completed move
-            move_evaluations = []  # Track move evaluations for ordering next iteration
+            move_evaluations = []  # Track move evaluations for logging only
+            moves_that_were_best = []  # Track all moves that were best at any point during this iteration
             
             # Start search visualization for this iteration
             self.visualizer.start_search(board, current_depth)
             
-            # Evaluate moves in optimal order with killer moves for current depth
-            if iteration > 1 and previous_iteration_move_order:
-                # Use the full move order from the previous iteration (sorted by evaluation)
-                # TODO: Should killer moves be used here?
-                reordered_moves = previous_iteration_move_order
+            # Evaluate moves in optimal order
+            if iteration > 1 and previous_iteration_best_moves and previous_iteration_move_order:
+                # Use reverse order of best moves from previous iteration
+                # Best move from previous iteration should be searched first
+                reordered_moves = self._create_move_order_from_previous_best(
+                    board, previous_iteration_best_moves, previous_iteration_move_order
+                )
             else:
                 # First iteration uses shallow search order
                 reordered_moves = sorted_moves
@@ -702,7 +710,7 @@ class MinimaxEngine(Engine):
                 board.push(move)
                 
                 # Search the resulting position
-                value, line, status = self._minimax(board, current_depth - 1, alpha, beta, [move_san], start_time, time_budget)
+                value, line, status = self._minimax(board, current_depth - 1, alpha, beta, [move_san], start_time, time_budget, game_stage)
                 
                 if status == SearchStatus.PARTIAL:
                     # Undo the move to restore the original board state
@@ -729,6 +737,8 @@ class MinimaxEngine(Engine):
                     # Log the new best move
                     self.logger.log_new_best_move(board.san(move), value)
                     self.logger.log_info(f"Updated best move from depth {current_depth}: {board.san(move)} ({value:.1f})")
+                    # Track this as a move that was best
+                    moves_that_were_best.append(move)
                 else:
                     # Compare this move against the existing best move
                     is_better = False
@@ -748,6 +758,8 @@ class MinimaxEngine(Engine):
                         # Log the new best move
                         self.logger.log_new_best_move(board.san(move), value)
                         self.logger.log_info(f"Updated best move from depth {current_depth}: {board.san(move)} ({value:.1f})")
+                        # Track this as a move that was best
+                        moves_that_were_best.append(move)
                 
                 # Update alpha-beta bounds
                 if original_turn:  # White to move: maximize
@@ -755,7 +767,7 @@ class MinimaxEngine(Engine):
                 else:  # Black to move: minimize
                     beta = min(beta, value)
                 
-                # Track move evaluation for ordering next iteration
+                # Track move evaluation for logging
                 move_evaluations.append((move, value))
             
             # Update completed_depth based on whether all moves completed
@@ -768,17 +780,14 @@ class MinimaxEngine(Engine):
             else:
                 self.logger.log_info(f"Depth {current_depth} had no completed moves - keeping previous best move from depth {completed_depth}")
             
-            # Sort moves by evaluation for next iteration (if we have evaluations)
-            if move_evaluations:
-                # Sort moves by evaluation (best first for the side to move)
-                # This creates the move order for the next iteration based on actual search results
-                if board.turn:  # White to move: sort by descending evaluation
-                    move_evaluations.sort(key=lambda x: x[1], reverse=True)
-                else:  # Black to move: sort by ascending evaluation
-                    move_evaluations.sort(key=lambda x: x[1], reverse=False)
-                
-                # Store the ordered moves for next iteration
-                previous_iteration_move_order = [move for move, eval_score in move_evaluations]
+            # Store all moves that were best at any point during this iteration
+            if moves_that_were_best:
+                # Store them in reverse order (most recent best move first)
+                # This creates the move order for the next iteration
+                previous_iteration_best_moves = list(reversed(moves_that_were_best))
+            
+            # Store the complete move order from this iteration for next iteration
+            previous_iteration_move_order = reordered_moves
             
             # Log iteration completion
             iteration_time = time.time() - start_time
@@ -838,6 +847,33 @@ class MinimaxEngine(Engine):
         
         return best_move
 
+    def _create_move_order_from_previous_best(self, board, previous_best_moves, previous_move_order):
+        """
+        Create move order for current iteration based on all moves that were best in previous iteration.
+        
+        The strategy is to search all moves that were best in the previous iteration first,
+        in reverse order (most recent best move first), then use the previous iteration's
+        move order for any remaining moves.
+        
+        Args:
+            board: Current board position
+            previous_best_moves: List of moves that were best at any point in previous iteration (in reverse order)
+            previous_move_order: Complete move order from previous iteration
+            
+        Returns:
+            List of moves in optimal order for current iteration
+        """
+        # Start with all moves that were best in previous iteration (already in reverse order)
+        ordered_moves = list(previous_best_moves)
+        
+        # Add all moves from previous iteration's order that weren't in the previous best moves
+        # This ensures we don't miss any legal moves and maintains the previous iteration's ordering
+        for move in previous_move_order:
+            if move not in ordered_moves:
+                ordered_moves.append(move)
+        
+        return ordered_moves
+
     def _finish_search_logging(self, board, best_move, best_value, best_line, search_time):
         """
         Finish search logging and visualization.
@@ -890,7 +926,7 @@ class MinimaxEngine(Engine):
         
         self.logger.log_best_move(board, best_move, best_value, best_line, final_components)
 
-    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None):
+    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None, game_stage=None):
         """
         Minimax search with alpha-beta pruning with transposition table support.
         
@@ -972,7 +1008,7 @@ class MinimaxEngine(Engine):
             self.visualizer.enter_node(board, None, 0, alpha, beta, True)
             
             # Perform quiescence search
-            eval_score, line, status = self._quiescence(board, alpha, beta)
+            eval_score, line, status = self._quiescence(board, alpha, beta, 0, game_stage)
             
             # Exit quiescence node for visualization
             self.visualizer.exit_node(eval_score, "QUIESCENCE", line if line else [], 0, 0)
@@ -997,7 +1033,7 @@ class MinimaxEngine(Engine):
                 eval_score = repetition_eval
             else:
                 # Other game over conditions
-                eval_score = self.evaluate(board)
+                eval_score = self.evaluate(board, game_stage)
             
             # Exit node for visualization
             self.visualizer.exit_node(eval_score, "TERMINAL", [], 0, 0)
@@ -1036,7 +1072,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget)
+                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage)
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1130,7 +1166,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget)
+                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage)
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1197,30 +1233,32 @@ class MinimaxEngine(Engine):
                 self.visualizer.exit_node(min_eval, "EXACT", [], 0, 0)
             return min_eval, best_line, SearchStatus.COMPLETE
 
-    def evaluate(self, board):
+    def evaluate(self, board, game_stage=None):
         """
         Evaluate the current board position using the evaluation manager.
         
         Args:
             board: Current board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME). If None, will be determined automatically.
             
         Returns:
             Evaluation score from White's perspective (rounded to 2 decimal places)
         """
-        evaluation = self.evaluation_manager.evaluate(board)
+        evaluation = self.evaluation_manager.evaluate(board, game_stage)
         return round(evaluation, 2)
     
-    def evaluate_with_components(self, board):
+    def evaluate_with_components(self, board, game_stage=None):
         """
         Evaluate the current board position with component breakdown.
         
         Args:
             board: Current board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME). If None, will be determined automatically.
             
         Returns:
             Dictionary with evaluation components and total score
         """
-        return self.evaluation_manager.evaluate_with_components(board)
+        return self.evaluation_manager.evaluate_with_components(board, game_stage)
     
     
     def get_evaluator_info(self):
@@ -1233,7 +1271,7 @@ class MinimaxEngine(Engine):
     
     
 
-    def _quiescence(self, board, alpha, beta, depth=0):
+    def _quiescence(self, board, alpha, beta, depth=0, game_stage=None):
         """
         Quiescence search - continues searching captures and checks to avoid horizon effect.
         
@@ -1258,7 +1296,8 @@ class MinimaxEngine(Engine):
         self.nodes_searched += 1
         
         # Check for game over conditions first
-        if board.is_game_over():
+        # NOTE: THIS CHECK IS COMMENTED OUT AS IT FEELS UNNECESSARY
+        if False and board.is_game_over():
             if board.is_checkmate():
                 # Checkmate evaluation
                 checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
@@ -1276,13 +1315,13 @@ class MinimaxEngine(Engine):
                 return repetition_eval, [], SearchStatus.COMPLETE
             else:
                 # Other game over conditions
-                return self.evaluate(board), [], SearchStatus.COMPLETE
+                return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
             
         # Limit quiescence depth to prevent infinite loops
         # Calculate maximum quiescence depth as: main_search_depth + additional_depth_limit
         max_quiescence_depth = self.depth + self.quiescence_additional_depth_limit
         if depth > max_quiescence_depth:
-            return self.evaluate(board), [], SearchStatus.COMPLETE
+            return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
         
         # Check if position is in tablebase for perfect evaluation
         if self.tablebase and self.is_tablebase_position(board):
@@ -1322,34 +1361,38 @@ class MinimaxEngine(Engine):
         # Check if position is in check
         is_in_check = board.is_check()
         
-        # Evaluate current position (stand pat) - only if not in check
-        if not is_in_check:
-            stand_pat = self.evaluate(board)
+        if is_in_check:
+            # IN CHECK: Search ALL legal moves (must respond to check)
+            moves_to_search = list(board.legal_moves)
+            
+            if not moves_to_search:
+                # If in check and no legal moves, it's checkmate
+                return -100000 if board.turn else 100000, [], SearchStatus.COMPLETE
+        else:
+            # NOT IN CHECK: Evaluate stand pat and search captures/checks
+            stand_pat = self.evaluate(board, game_stage)
             
             # Alpha-beta pruning at quiescence level
             if board.turn:  # White to move: maximize
                 if stand_pat >= beta:
                     return beta, [], SearchStatus.COMPLETE
+                if stand_pat + 990 < alpha:  # DELTA PRUNING TMP
+                    return alpha, [], SearchStatus.COMPLETE
+
                 alpha = max(alpha, stand_pat)
             else:  # Black to move: minimize
                 if stand_pat <= alpha:
                     return alpha, [], SearchStatus.COMPLETE
+                if stand_pat - 990 > beta:  # DELTA PRUNING TMP
+                    return beta, [], SearchStatus.COMPLETE
+
                 beta = min(beta, stand_pat)
-        
-        # Determine which moves to search
-        if is_in_check:
-            # If in check, search ALL legal moves (the opponent must respond to the check)
-            moves_to_search = list(board.legal_moves)
-        else:
-            # If not in check, search captures and checks for tactical accuracy
+            
+            # Search captures and checks for tactical accuracy
             moves_to_search = self._get_quiescence_moves(board)
-        if not moves_to_search:
-            if is_in_check:
-                # If in check and no legal moves, it's checkmate
-                return -100000 if board.turn else 100000, [], SearchStatus.COMPLETE
-            else:
+            
+            if not moves_to_search:
                 # If not in check and no captures/checks, return stand pat
-                stand_pat = self.evaluate(board)
                 return stand_pat, [], SearchStatus.COMPLETE
         
         best_line = []
@@ -1364,7 +1407,7 @@ class MinimaxEngine(Engine):
             # Make the move
             board.push(move)
             # Recursively search the resulting position
-            score, line, status = self._quiescence(board, alpha, beta, depth + 1)
+            score, line, status = self._quiescence(board, alpha, beta, depth + 1, game_stage)
             
             # If search was partial, propagate up immediately
             if status == SearchStatus.PARTIAL:
@@ -1783,33 +1826,45 @@ class MinimaxEngine(Engine):
             return None 
     def _get_quiescence_moves(self, board):
         """
-        Get moves to search in quiescence, including defensive moves based on configuration.
+        Get moves to search in quiescence, ordered by priority:
+        1. Captures (ordered by MVV-LVA)
+        2. Checks
+        3. Defensive moves (if configured)
         
         Args:
             board: Current board state
             
         Returns:
-            List of moves to search in quiescence
+            List of moves to search in quiescence, ordered by priority
         """
         # Generate legal moves once
         legal_moves = list(board.legal_moves)
         
-        # Build moves_to_search directly in a single pass
-        moves_to_search = []
+        # Categorize moves by type
+        captures = []
+        checks = []
+        defensive_moves = []
         
         for move in legal_moves:
             is_capture = board.is_capture(move)
             
             if is_capture:
                 # Always include captures
-                moves_to_search.append(move)
+                captures.append(move)
             else:
                 # Check if this non-capture move gives check (only if checks are enabled)
                 if self.quiescence_include_checks and board.is_into_check(move):
-                    moves_to_search.append(move)
+                    checks.append(move)
                 # Check if this is a defensive move (only if defensive moves are enabled)
                 elif (self.quiescence_include_queen_defense or self.quiescence_include_value_threshold) and self._is_defensive_move_fast(board, move):
-                    moves_to_search.append(move)
+                    defensive_moves.append(move)
+        
+        # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+        captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
+        
+        # Combine moves in priority order: captures first, then checks, then defensive moves
+        moves_to_search = captures + checks + defensive_moves
+        
         return moves_to_search
     
     def _is_defensive_move_fast(self, board, move):

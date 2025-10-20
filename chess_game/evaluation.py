@@ -16,6 +16,10 @@ import os
 
 import numpy as np
 
+# Game stage constants
+OPENING = 0
+MIDDLEGAME = 1
+ENDGAME = 2
 
 # Mapping from piece type to board bitboard attribute for efficient direct access
 PIECE_TYPE_TO_BITBOARD = {
@@ -98,19 +102,36 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.starting_piece_count = chess.popcount(board.occupied)
         self.starting_side_to_move = board.turn
     
+    def _determine_game_stage(self, board: chess.Board) -> int:
+        """
+        Determine the game stage based on starting position piece count.
+        
+        Uses starting_piece_count for consistent game stage determination.
+        """
+        # Check for endgame first
+        if self.starting_piece_count is not None:
+            if self.starting_piece_count <= 16:
+                return ENDGAME
+            elif self.starting_piece_count < 32:
+                return MIDDLEGAME
+            else:  # starting_piece_count == 32
+                return OPENING
+        else:
+            # Fallback: assume middlegame if starting position not set
+            return MIDDLEGAME
+
     def _is_endgame_evaluation(self) -> bool:
         """
-        Determine if we should use endgame evaluation based on starting position.
+        Determine if the current position should be evaluated as an endgame.
         
         Returns:
-            True if endgame evaluation should be used
+            True if position is in endgame phase, False otherwise
         """
-        # Use starting position piece count if available, otherwise fall back to current position
         if self.starting_piece_count is not None:
             return self.starting_piece_count <= 16
         else:
-            # Fallback for when starting position hasn't been set
-            return True  # Conservative fallback
+            return False  # Conservative fallback - assume not endgame if starting position not set
+
     
     def _load_config(self, config_file: Optional[str]) -> Dict[str, Any]:
         """Load evaluation configuration"""
@@ -154,9 +175,9 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Cache mobility weights (excluding queen - use piece-square tables instead)
         mobility_weights = self.config.get("mobility_weights", {})
         self.cached_mobility_weights = {
-            chess.KNIGHT: mobility_weights.get("knight", 3),
-            chess.BISHOP: mobility_weights.get("bishop", 4),
-            chess.ROOK: mobility_weights.get("rook", 5)
+            chess.KNIGHT: mobility_weights.get("2", 3),
+            chess.BISHOP: mobility_weights.get("3", 4),
+            chess.ROOK: mobility_weights.get("4", 5)
         }
         
         # Cache quality weights
@@ -195,7 +216,8 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Cache pawn structure settings
         self.cached_pawn_structure_enabled = self.config.get("pawn_structure_enabled", True)
-        self.cached_pawn_islands_weight = self.config.get("pawn_islands_weight", 0.1)
+        self.cached_pawn_structure_weight = self.config.get("pawn_structure_weight", 0.1)
+        self.cached_pawn_islands_bonus = self.config.get("pawn_islands_bonus", 0.1)
         self.cached_passed_pawn_bonus = self.config.get("passed_pawn_bonus", 20)
         
         # Cache game over condition values
@@ -205,9 +227,9 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Cache mobility enabled settings
         mobility_enabled = self.config.get("mobility_enabled", {})
         self.mobility_enabled = {
-            "knight": mobility_enabled.get("knight", False),
-            "bishop": mobility_enabled.get("bishop", False),
-            "rook": mobility_enabled.get("rook", False)
+            chess.KNIGHT: mobility_enabled.get("2", False),
+            chess.BISHOP: mobility_enabled.get("3", False),
+            chess.ROOK: mobility_enabled.get("4", False)
         }
         
         # Cache square mirror mapping for positional evaluation
@@ -358,12 +380,13 @@ class HandcraftedEvaluator(BaseEvaluator):
             chess.KING: self.endgame_king_table
         }
     
-    def evaluate(self, board: chess.Board) -> float:
+    def evaluate(self, board: chess.Board, game_stage: int = None) -> float:
         """
         Evaluate the current board position.
         
         Args:
             board: Current chess board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME). If None, will be determined automatically.
             
         Returns:
             Evaluation score from White's perspective
@@ -381,24 +404,20 @@ class HandcraftedEvaluator(BaseEvaluator):
         if board.halfmove_clock >= 100:  # Fifty-move rule
             return self.cached_draw_value
         
+        # Determine game stage if not provided
+        if game_stage is None:
+            game_stage = self._determine_game_stage(board)
         
-        # Check if this should use endgame evaluation based on starting position
-        is_endgame = self._is_endgame_evaluation()
-        
-        if is_endgame:
-            evaluation = self._evaluate_endgame(board)
-        else:
-            evaluation = self._evaluate_middlegame(board)
-        
+        # Evaluate position using consolidated function
+        return self._evaluate_position(board, game_stage, return_components=False)
     
-        return evaluation
-    
-    def evaluate_with_components(self, board: chess.Board) -> dict:
+    def evaluate_with_components(self, board: chess.Board, game_stage: int = None) -> dict:
         """
         Evaluate the current board position with component breakdown.
         
         Args:
             board: Current chess board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME). If None, will be determined automatically.
             
         Returns:
             Dictionary with evaluation components and total score
@@ -410,6 +429,8 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
+                'king_safety': 0.0,
+                'pawn_structure': 0.0,
                 'total': round(checkmate_score, 2)
             }
         
@@ -418,6 +439,8 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
+                'king_safety': 0.0,
+                'pawn_structure': 0.0,
                 'total': round(self.cached_draw_value, 2)
             }
         
@@ -426,6 +449,8 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
+                'king_safety': 0.0,
+                'pawn_structure': 0.0,
                 'total': round(self.cached_draw_value, 2)
             }
         
@@ -434,63 +459,17 @@ class HandcraftedEvaluator(BaseEvaluator):
                 'material': 0.0,
                 'positional': 0.0,
                 'mobility': 0.0,
+                'king_safety': 0.0,
+                'pawn_structure': 0.0,
                 'total': round(self.cached_draw_value, 2)
             }
         
-        # Check if this should use endgame evaluation based on starting position
-        is_endgame = self._is_endgame_evaluation()
+        # Determine game stage if not provided
+        if game_stage is None:
+            game_stage = self._determine_game_stage(board)
         
-        if is_endgame:
-            # Use cached endgame weights for performance
-            material_weight = self.cached_endgame_material_weight
-            positional_weight = self.cached_endgame_positional_weight
-            mobility_weight = self.cached_endgame_mobility_weight
-            
-            material_score = self._evaluate_material(board)
-            mobility_score = self._evaluate_mobility_adaptive(board)
-            
-            # Calculate positional score using _evaluate_positional (which only handles PST)
-            positional_score = self._evaluate_positional(board, is_endgame=True)
-            
-            # Apply endgame weights
-            weighted_material = material_weight * material_score
-            weighted_position = positional_weight * positional_score
-            weighted_mobility = mobility_weight * mobility_score
-            
-            # No king safety evaluation in endgame
-            weighted_king_safety = 0.0
-        else:
-            # Use standard evaluation
-            material_score = self._evaluate_material(board)
-            mobility_score = self._evaluate_mobility_adaptive(board)
-            
-            # Calculate positional score using _evaluate_positional (which only handles PST)
-            positional_score = self._evaluate_positional(board, is_endgame=False)
-            
-            # Apply standard weights using cached values for performance
-            weighted_material = self.cached_material_weight * material_score
-            weighted_position = self.cached_positional_weight * positional_score
-            # print("Cached positional weight: ", self.cached_positional_weight, " Positional score: ", positional_score)
-            weighted_mobility = self.cached_mobility_weight * mobility_score
-            
-            # Add king safety evaluation for middlegame
-            king_safety_score = self._evaluate_king_safety(board)
-            weighted_king_safety = self.cached_king_safety_weight * king_safety_score
-        
-        # Add pawn structure evaluation for both middlegame and endgame
-        pawn_structure_score = self._evaluate_pawn_structure(board)
-        weighted_pawn_structure = self.cached_pawn_islands_weight * pawn_structure_score
-        
-        total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety + weighted_pawn_structure
-        
-        return {
-            'material': round(weighted_material, 3),
-            'positional': round(weighted_position, 3),
-            'mobility': round(weighted_mobility, 3),
-            'king_safety': round(weighted_king_safety, 3),
-            'pawn_structure': round(weighted_pawn_structure, 3),
-            'total': round(total_score, 3)
-        }
+        # Use consolidated function with component breakdown
+        return self._evaluate_position(board, game_stage, return_components=True)
     
     def _evaluate_material(self, board: chess.Board) -> float:
         """Evaluate material balance using optimized bitboard operations with simplification logic"""
@@ -561,14 +540,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         return material_score
     
-    def _evaluate_positional(self, board: chess.Board, is_endgame: bool = None) -> float:
+    def _evaluate_positional(self, board: chess.Board, game_stage: int) -> float:
         """Evaluate positional factors using optimized piece-square tables and mobility"""
-        # Check if this should use endgame evaluation based on starting position (only if not provided)
-        if is_endgame is None:
-            is_endgame = self._is_endgame_evaluation()
-        
-        # Choose appropriate piece-square tables
-        tables = self.endgame_piece_square_tables if is_endgame else self.piece_square_tables
+        # Choose appropriate piece-square tables based on game stage
+        tables = self.endgame_piece_square_tables if game_stage == ENDGAME else self.piece_square_tables
         
         positional_score = 0
         
@@ -585,17 +560,19 @@ class HandcraftedEvaluator(BaseEvaluator):
             for square in chess.scan_forward(black_squares):
                 positional_score -= tables[piece_type][self.cached_square_mirror[square]]
         
-        # Note: Mobility and king safety are handled separately in evaluate_with_components
-        # to avoid double-counting. This method only handles piece-square tables.
         return positional_score
     
-    def _evaluate_mobility(self, board: chess.Board) -> float:
+    def _evaluate_mobility(self, board: chess.Board, game_stage: int) -> float:
         """
         Evaluate piece mobility using efficient bitboard operations.
         
         Mobility is the number of legal moves each piece can make.
         This is a key positional factor that indicates piece activity.
         """
+        # Skip mobility evaluation for endgames
+        if game_stage == ENDGAME:
+            return 0.0
+            
         mobility_score = 0
         
         # Get all pieces for each side
@@ -604,33 +581,16 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Evaluate mobility for each piece type based on configuration
         piece_types = [chess.KNIGHT, chess.BISHOP, chess.ROOK]
-        piece_names = {chess.KNIGHT: "knight", chess.BISHOP: "bishop", chess.ROOK: "rook"}
         
         for piece_type in piece_types:
-            piece_name = piece_names[piece_type]
-            
             # Check if mobility evaluation is enabled for this piece type
-            if self.mobility_enabled.get(piece_name, True):  # Default to True if not configured
+            if self.mobility_enabled.get(piece_type, True):  # Default to True if not configured
                 mobility_score += self._evaluate_piece_mobility(board, piece_type, chess.WHITE, white_pieces, black_pieces)
                 mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces, white_pieces)
         
         return mobility_score
     
 
-    
-    def _evaluate_mobility_adaptive(self, board: chess.Board) -> float:
-        """
-        Adaptive mobility evaluation that skips mobility for endgames.
-        
-        Mobility is less important in endgames, so we can skip it entirely.
-        """
-        # Skip mobility evaluation for endgames
-        if self._is_endgame_evaluation():
-            return 0.0
-        
-        # Use full evaluation for middlegame positions
-        return self._evaluate_mobility(board)
-    
     def _evaluate_king_safety(self, board: chess.Board) -> float:
         """
         Evaluate king safety using castling bonus and pawn shield.
@@ -857,7 +817,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Calculate scores
         # Fewer islands is better, so we want (black_islands - white_islands)
-        islands_score = (black_islands - white_islands) * self.cached_pawn_islands_weight
+        islands_score = (black_islands - white_islands) * self.cached_pawn_islands_bonus
         
         # More passed pawns is better, so we want (white_passed - black_passed)
         passed_pawns_score = (white_passed - black_passed) * self.cached_passed_pawn_bonus
@@ -1076,64 +1036,64 @@ class HandcraftedEvaluator(BaseEvaluator):
         return mobility_score
     
     
-    def _evaluate_endgame(self, board: chess.Board) -> float:
+    def _evaluate_position(self, board: chess.Board, game_stage: int, return_components: bool = False):
         """
-        Evaluate endgame positions with endgame-specific logic.
+        Evaluate position with game stage-specific logic.
         
         Args:
             board: Current chess board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME)
+            return_components: If True, return dict with component breakdown; if False, return float score
             
         Returns:
-            Endgame evaluation score
-        """
-        # Use cached endgame weights for performance
-        material_weight = self.cached_endgame_material_weight
-        positional_weight = self.cached_endgame_positional_weight
-        mobility_weight = self.cached_endgame_mobility_weight
-        
-        # Calculate components
-        material_score = self._evaluate_material(board)
-        positional_score = self._evaluate_positional(board, is_endgame=True)
-        mobility_score = self._evaluate_mobility(board)
-        pawn_structure_score = self._evaluate_pawn_structure(board)
-        
-        # Apply endgame-specific weights
-        total_score = (
-            material_weight * material_score +
-            positional_weight * positional_score +
-            mobility_weight * mobility_score +
-            self.cached_pawn_islands_weight * pawn_structure_score
-        )
-        
-        return total_score
-    
-    def _evaluate_middlegame(self, board: chess.Board) -> float:
-        """
-        Evaluate middlegame positions with standard weights.
-        
-        Args:
-            board: Current chess board state
-            
-        Returns:
-            Middlegame evaluation score
+            Position evaluation score (float) or component breakdown (dict)
         """
         # Calculate all components
         material_score = self._evaluate_material(board)
-        positional_score = self._evaluate_positional(board, is_endgame=False)
-        mobility_score = self._evaluate_mobility(board)
-        king_safety_score = self._evaluate_king_safety(board)
+        positional_score = self._evaluate_positional(board, game_stage)
+        mobility_score = self._evaluate_mobility(board, game_stage)
         pawn_structure_score = self._evaluate_pawn_structure(board)
         
-        # Use cached standard weights for performance
-        total_score = (
-            self.cached_material_weight * material_score +
-            self.cached_positional_weight * positional_score +
-            self.cached_mobility_weight * mobility_score +
-            self.cached_king_safety_weight * king_safety_score +
-            self.cached_pawn_islands_weight * pawn_structure_score
-        )
+        # Choose weights based on game stage
+        if game_stage == ENDGAME:
+            # Use cached endgame weights for performance
+            material_weight = self.cached_endgame_material_weight
+            positional_weight = self.cached_endgame_positional_weight
+            mobility_weight = self.cached_endgame_mobility_weight
+            king_safety_weight = 0.0  # No king safety evaluation in endgame
+        else:
+            # Use cached standard weights for performance
+            material_weight = self.cached_material_weight
+            positional_weight = self.cached_positional_weight
+            mobility_weight = self.cached_mobility_weight
+            king_safety_weight = self.cached_king_safety_weight
         
-        return total_score
+        # Calculate king safety only for non-endgame positions
+        if game_stage != ENDGAME:
+            king_safety_score = self._evaluate_king_safety(board)
+        else:
+            king_safety_score = 0.0
+        
+        # Apply weights
+        weighted_material = material_weight * material_score
+        weighted_position = positional_weight * positional_score
+        weighted_mobility = mobility_weight * mobility_score
+        weighted_king_safety = king_safety_weight * king_safety_score
+        weighted_pawn_structure = self.cached_pawn_structure_weight * pawn_structure_score
+        
+        total_score = weighted_material + weighted_position + weighted_mobility + weighted_king_safety + weighted_pawn_structure
+        
+        if return_components:
+            return {
+                'material': round(weighted_material, 3),
+                'positional': round(weighted_position, 3),
+                'mobility': round(weighted_mobility, 3),
+                'king_safety': round(weighted_king_safety, 3),
+                'pawn_structure': round(weighted_pawn_structure, 3),
+                'total': round(total_score, 3)
+            }
+        else:
+            return total_score
     
 
     
@@ -1193,34 +1153,36 @@ class EvaluationManager:
             print(f"⚠️  Unknown evaluator type: {evaluator_type}, using handcrafted")
             return HandcraftedEvaluator(**kwargs)
     
-    def evaluate(self, board: chess.Board) -> float:
+    def evaluate(self, board: chess.Board, game_stage: int = None) -> float:
         """
         Evaluate a chess position.
         
         Args:
             board: Current chess board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME). If None, will be determined automatically.
             
         Returns:
             Evaluation score from White's perspective
         """
-        score = self.evaluator.evaluate(board)
+        score = self.evaluator.evaluate(board, game_stage)
         return score
     
-    def evaluate_with_components(self, board: chess.Board) -> dict:
+    def evaluate_with_components(self, board: chess.Board, game_stage: int = None) -> dict:
         """
         Evaluate a chess position with component breakdown.
         
         Args:
             board: Current chess board state
+            game_stage: Game stage (OPENING, MIDDLEGAME, or ENDGAME). If None, will be determined automatically.
             
         Returns:
             Dictionary with evaluation components and total score
         """
         if hasattr(self.evaluator, 'evaluate_with_components'):
-            components = self.evaluator.evaluate_with_components(board)
+            components = self.evaluator.evaluate_with_components(board, game_stage)
         else:
             # Fallback for evaluators that don't support component breakdown
-            score = self.evaluator.evaluate(board)
+            score = self.evaluator.evaluate(board, game_stage)
             components = {
                 'material': 0.0,
                 'positional': 0.0,

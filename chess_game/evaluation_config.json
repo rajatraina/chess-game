@@ -4,14 +4,24 @@
     "mobility_weight": 0.35,
     "mobility_evaluation_mode": "adaptive",
     "mobility_weights": {
-        "knight": 3,
-        "bishop": 3,
-        "rook": 2
+        "2": 3,
+        "3": 3,
+        "4": 2
+    },
+    "_mobility_weights_legend": {
+        "2": "knight (chess.KNIGHT)",
+        "3": "bishop (chess.BISHOP)", 
+        "4": "rook (chess.ROOK)"
     },
     "mobility_enabled": {
-        "knight": true,
-        "bishop": true,
-        "rook": true
+        "2": true,
+        "3": true,
+        "4": true
+    },
+    "_mobility_enabled_legend": {
+        "2": "knight (chess.KNIGHT)",
+        "3": "bishop (chess.BISHOP)",
+        "4": "rook (chess.ROOK)"
     },
     "mobility_quality_weights": {
         "central_squares_multiplier": 1.0,
@@ -22,8 +32,8 @@
         "positional_weight": 1.5,
         "mobility_weight": 0.1
     },
-    "search_depth": 3,
-    "search_depth_starting": 3,
+    "search_depth": 4,
+    "search_depth_starting": 4,
     "max_search_depth": 11,
     "search_deepening_time_budget_fraction": 0.4,
     "search_deepening_min_time_budget": 12.0,
@@ -47,7 +57,7 @@
     "draw_value": 0,
     "repetition_evaluation": 0,
     "winning_endgame_threshold": 1000,
-    "quiescence_additional_depth_limit": 7,
+    "quiescence_additional_depth_limit": 4,
     "quiescence_additional_depth_limit_shallow_search": 0,
     "quiescence_include_checks": true,
     "quiescence_include_queen_defense": false,
@@ -62,7 +72,8 @@
     "bishop_pair_bonus": 0,
     "king_safety_weight": 1.0,
     "pawn_structure_enabled": true,
-    "pawn_islands_weight": 4,
+    "pawn_structure_weight": 0.1,
+    "pawn_islands_bonus": 10,
     "passed_pawn_bonus": 20,
     "search_visualization_enabled": false,
     "search_visualization_target_fen": null,
