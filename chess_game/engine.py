@@ -640,7 +640,7 @@ class MinimaxEngine(Engine):
             remaining_time = time_budget - elapsed_time
             
             # Use predictive time management to determine optimal starting depth
-            optimal_starting_depth = self._predict_optimal_starting_depth(shallow_search_stats, remaining_time)
+            optimal_starting_depth = self._predict_optimal_starting_depth(shallow_search_stats, remaining_time, starting_depth)
             self.logger.log_info(f"Predictive time management: elapsed={elapsed_time:.2f}s, remaining={remaining_time:.2f}s, using depth {optimal_starting_depth} as starting depth")
         else:
             # Use default starting depth
@@ -1591,16 +1591,16 @@ class MinimaxEngine(Engine):
 
         return {3: t3, 5: t3*r35, 7: t3*r35*r57}
 
-    def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget):
+    def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget, starting_depth):
         """
         Predict the optimal starting depth for iterative deepening based on shallow search results.
         
         Args:
             shallow_search_stats: Dictionary with 'nodes', 'moves', and 'num_pieces' from shallow search
             time_budget: Available time budget in seconds
-            
+            starting_depth: Min starting depth from configuration
         Returns:
-            Optimal starting depth (3, 5, or 7)
+            Optimal starting depth
         """
         if not shallow_search_stats or 'nodes' not in shallow_search_stats or 'moves' not in shallow_search_stats or 'num_pieces' not in shallow_search_stats:
             # Fallback to default if no shallow search stats available
@@ -1618,13 +1618,13 @@ class MinimaxEngine(Engine):
         safety_factor = self.evaluation_manager.evaluator.config.get("predictive_time_safety_factor", 0.8)
         available_time = time_budget * safety_factor
         
-        optimal_depth = 3  # Default fallback
+        optimal_depth = starting_depth  # Default fallback
         
-        # Check depths in order of preference [7, 5, 3]
-        for depth in [3]:
-            if predicted_times[depth] <= available_time:
-                optimal_depth = depth
-                break
+        # TODO: DISABLED
+        #for depth in [starting_depth]:
+        #    if predicted_times[depth] <= available_time:
+        #        optimal_depth = depth
+        #        break
         
         if not self.quiet:
             self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}, pieces={num_pieces}")

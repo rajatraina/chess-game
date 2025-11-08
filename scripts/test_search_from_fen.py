@@ -44,28 +44,24 @@ class MoveEvaluationCaptureEngine(MinimaxEngine):
         self.move_evaluations = []  # Store move evaluations during search
         self.capture_evaluations = False
     
-    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None):
-        """Override minimax to capture move evaluations at root level"""
-        # Only capture evaluations at the root level (depth == self.depth)
-        if self.capture_evaluations and depth == self.depth:
-            return self._minimax_with_capture(board, depth, alpha, beta, variation, start_time, time_budget)
+    def _iterative_deepening_search(self, board, start_time, time_budget, search_mode=None):
+        """Override iterative deepening to capture move evaluations"""
+        if self.capture_evaluations:
+            return self._iterative_deepening_with_capture(board, start_time, time_budget, search_mode)
         else:
-            return super()._minimax(board, depth, alpha, beta, variation, start_time, time_budget)
+            return super()._iterative_deepening_search(board, start_time, time_budget, search_mode)
     
-    def _minimax_with_capture(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None):
-        """Minimax that captures move evaluations at root level"""
-        # This is a simplified version that captures root move evaluations
-        # We'll use the existing minimax but capture the evaluations
-        
+    def _iterative_deepening_with_capture(self, board, start_time, time_budget, search_mode=None):
+        """Iterative deepening that captures move evaluations at each depth"""
         # Get all legal moves
         legal_moves = list(board.legal_moves)
         self.move_evaluations = []
         
-        # Evaluate each move with a shallow search
+        # Evaluate each move with a shallow search to capture evaluations
         for move in legal_moves:
             board.push(move)
             # Use a shallow search to get a proper evaluation
-            eval_score, _, _ = super()._minimax(board, depth - 1, -float('inf'), float('inf'), [], start_time, time_budget)
+            eval_score, _, _ = self._minimax(board, 2, -float('inf'), float('inf'), [], None, None)
             board.pop()
             
             self.move_evaluations.append((move, eval_score))
@@ -76,8 +72,8 @@ class MoveEvaluationCaptureEngine(MinimaxEngine):
         else:  # Black to move - lower is better
             self.move_evaluations.sort(key=lambda x: x[1])
         
-        # Now run the normal search
-        return super()._minimax(board, depth, alpha, beta, variation, start_time, time_budget)
+        # Now run the normal iterative deepening search
+        return super()._iterative_deepening_search(board, start_time, time_budget, search_mode)
 
 class FENAnalyzer:
     """Enhanced FEN position analyzer with detailed logging options"""
@@ -129,9 +125,9 @@ class FENAnalyzer:
         
         # Show all moves evaluation if requested
         if self.show_all_moves and not self.quiet:
-            self._analyze_all_moves(board, engine, eval_depth)
+            self._analyze_all_moves(board, engine, eval_depth, time_budget)
         
-        # Run the main search
+        # Run the main search using the engine's proper flow
         if not self.quiet:
             print("🚀 Starting iterative deepening search...")
             print("=" * 80)
@@ -168,58 +164,58 @@ class FENAnalyzer:
         
         return results
     
-    def _analyze_all_moves(self, board: chess.Board, engine: MoveEvaluationCaptureEngine, eval_depth: int = 2):
-        """Analyze and display evaluation for all legal moves using search"""
-        print(f"📋 Evaluating all legal moves (search evaluation with depth {eval_depth}):")
+    def _analyze_all_moves(self, board: chess.Board, engine: MoveEvaluationCaptureEngine, eval_depth: int = 2, time_budget: float = None):
+        """Analyze and display evaluation for all legal moves using the engine's search flow"""
+        print(f"📋 Evaluating all legal moves (using engine search flow with depth {eval_depth}):")
         print("-" * 70)
         
         # Enable evaluation capture
         engine.capture_evaluations = True
         
-        # Run a shallow search to capture move evaluations
+        # Temporarily set depth for move evaluation
         original_depth = engine.depth
-        engine.depth = eval_depth  # Use specified depth for move evaluation
+        engine.depth = eval_depth
         
-        # Get move evaluations through search
-        legal_moves = list(board.legal_moves)
-        move_evals = []
-        
-        for move in legal_moves:
-            # Make the move
-            board.push(move)
+        # Use the engine's search flow to get move evaluations
+        # This will call _iterative_deepening_with_capture which captures move evaluations
+        try:
+            # Use a reasonable fraction of the total time budget for move evaluation
+            eval_time = min(10.0, time_budget * 0.1) if time_budget else 5.0
+            print(f"ℹ️  Using {eval_time:.1f}s for move evaluation phase")
+            best_move = engine.get_move(board, time_budget=eval_time, disable_opening_book=True)
             
-            # Run a search to get proper evaluation
-            eval_score, _, _ = engine._minimax(board, eval_depth - 1, -float('inf'), float('inf'), [], None, None)
-            
-            # Get components if requested
-            if self.show_components and hasattr(engine.evaluation_manager, 'evaluate_with_components'):
-                try:
-                    components = engine.evaluation_manager.evaluate_with_components(board)
-                    eval_str = f"{eval_score:.2f} (M:{components['material']:.1f}, P:{components['positional']:.1f}, Mob:{components['mobility']:.1f})"
-                except:
-                    eval_str = f"{eval_score:.2f}"
+            # Display the captured move evaluations
+            if hasattr(engine, 'move_evaluations') and engine.move_evaluations:
+                move_evals = []
+                for move, eval_score in engine.move_evaluations:
+                    # Get components if requested
+                    if self.show_components and hasattr(engine.evaluation_manager, 'evaluate_with_components'):
+                        try:
+                            # Make the move to get components
+                            board.push(move)
+                            components = engine.evaluation_manager.evaluate_with_components(board)
+                            board.pop()
+                            eval_str = f"{eval_score:.2f} (M:{components['material']:.1f}, P:{components['positional']:.1f}, Mob:{components['mobility']:.1f}, KS:{components['king_safety']:.1f}, PS:{components['pawn_structure']:.1f})"
+                        except:
+                            eval_str = f"{eval_score:.2f}"
+                    else:
+                        eval_str = f"{eval_score:.2f}"
+                    
+                    move_evals.append((move, eval_score, eval_str))
+                
+                # Display results - show ALL moves when --all-moves is specified
+                for i, (move, eval_score, eval_str) in enumerate(move_evals):
+                    move_san = board.san(move)
+                    print(f"   {i+1:2d}. {move_san:6s} ({move}) = {eval_str}")
             else:
-                eval_str = f"{eval_score:.2f}"
-            
-            move_evals.append((move, eval_score, eval_str))
-            
-            # Undo the move
-            board.pop()
+                print("   No move evaluations captured")
+                
+        except Exception as e:
+            print(f"   Error during move evaluation: {e}")
         
-        # Restore original depth
+        # Restore original depth and disable capture
         engine.depth = original_depth
         engine.capture_evaluations = False
-        
-        # Sort by evaluation (best for current player first)
-        if board.turn:  # White to move - higher is better
-            move_evals.sort(key=lambda x: x[1], reverse=True)
-        else:  # Black to move - lower is better
-            move_evals.sort(key=lambda x: x[1])
-        
-        # Display results - show ALL moves when --all-moves is specified
-        for i, (move, eval_score, eval_str) in enumerate(move_evals):
-            move_san = board.san(move)
-            print(f"   {i+1:2d}. {move_san:6s} ({move}) = {eval_str}")
         
         print()
     
@@ -242,6 +238,8 @@ class FENAnalyzer:
             print(f"   Material: {comp['material']:.1f}")
             print(f"   Positional: {comp['positional']:.1f}")
             print(f"   Mobility: {comp['mobility']:.1f}")
+            print(f"   King Safety: {comp['king_safety']:.1f}")
+            print(f"   Pawn Structure: {comp['pawn_structure']:.1f}")
         
         # Search statistics
         print(f"⏱️  Search time: {results['search_time']:.2f}s")
@@ -328,7 +326,7 @@ def main():
             sys.exit(1)
         
         # Exit with appropriate code
-        if results['evaluation'] != 'unknown':
+        if results['evaluation'] != 'unknown' and results['evaluation'] is not None:
             if results['evaluation'] > 0:
                 sys.exit(0)  # White advantage
             elif results['evaluation'] < 0:
