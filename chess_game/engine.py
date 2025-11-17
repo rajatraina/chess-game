@@ -4,6 +4,7 @@ import chess.syzygy
 import time
 import os
 import zlib
+import math
 from enum import Enum
 try:
     from .evaluation import EvaluationManager, create_evaluator
@@ -99,11 +100,11 @@ class MinimaxEngine(Engine):
         # MVV-LVA piece values for capture move ordering (defined once at initialization)
         self.mvv_lva_values = {
             chess.PAWN: 1,
-            chess.KNIGHT: 2,
+            chess.KNIGHT: 3,
             chess.BISHOP: 3,
-            chess.ROOK: 4,
-            chess.QUEEN: 5,
-            chess.KING: 6
+            chess.ROOK: 5,
+            chess.QUEEN: 9,
+            chess.KING: 100
         }
         
         # Load time budget parameters
@@ -112,8 +113,14 @@ class MinimaxEngine(Engine):
         self.time_budget_safety_margin = self.evaluation_manager.evaluator.config.get("time_budget_safety_margin", 0.1)
         
         # Load quiescence parameters
-        self.quiescence_additional_depth_limit = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit", 4)
+        # Note: quiescence_additional_depth_limit is no longer used - max depth is derived from individual move type limits
         self.quiescence_additional_depth_limit_shallow_search = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_shallow_search", 2)
+        self.quiescence_additional_depth_limit_captures = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_captures", 8)
+        self.quiescence_additional_depth_limit_checks = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_checks", 8)
+        self.quiescence_additional_depth_limit_promotions = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_promotions", 8)
+        self.quiescence_additional_depth_limit_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_queen_defense", 0)
+        self.quiescence_additional_depth_limit_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_value_threshold", 0)
+        # Legacy flags (kept for backward compatibility, but now controlled by depth limits)
         self.quiescence_include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
         self.quiescence_include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
         self.quiescence_include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
@@ -204,6 +211,7 @@ class MinimaxEngine(Engine):
         
         # Leaf node: use quiescence search
         if depth == 0:
+            # Start quiescence depth at 0 (quiescence depth, not total depth)
             eval_score, line, status = self._quiescence_shallow(board, alpha, beta, 0, game_stage)
             return eval_score, line, status
         
@@ -293,8 +301,8 @@ class MinimaxEngine(Engine):
             return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
         
         # Limit quiescence depth
-        # Calculate maximum quiescence depth as: shallow_search_depth + shallow_search_specific_depth_limit
-        max_quiescence_depth = self.moveorder_shallow_search_depth + self.quiescence_additional_depth_limit_shallow_search
+        # depth represents quiescence depth (starting at 0), limit is additional depth beyond base search
+        max_quiescence_depth = self.quiescence_additional_depth_limit_shallow_search
         if depth > max_quiescence_depth:
             return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
         
@@ -322,8 +330,22 @@ class MinimaxEngine(Engine):
                     return alpha, [], SearchStatus.COMPLETE
                 beta = min(beta, stand_pat)
             
-            # Search captures and checks for tactical accuracy
-            moves_to_search = self._get_quiescence_moves(board)
+            # Search captures, checks, and promotions for tactical accuracy
+            # For shallow search, keep it simple: just captures, checks, and promotions
+            include_captures = True
+            include_checks = True
+            include_promotions = True
+            include_queen_defense = False
+            include_value_threshold = False
+            
+            moves_to_search = self._get_quiescence_moves(
+                board,
+                include_captures=include_captures,
+                include_checks=include_checks,
+                include_promotions=include_promotions,
+                include_queen_defense=include_queen_defense,
+                include_value_threshold=include_value_threshold
+            )
             
             if not moves_to_search:
                 # If not in check and no captures/checks, return stand pat
@@ -519,6 +541,10 @@ class MinimaxEngine(Engine):
         
         # Clear killer moves for new search to avoid stale data
         self._clear_killer_moves()
+        
+        # Clear all evaluation caches for new search
+        if hasattr(self.evaluation_manager.evaluator, 'clear_eval_cache'):
+            self.evaluation_manager.evaluator.clear_eval_cache()
         
         # Set the starting position for consistent evaluation throughout search
         if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
@@ -816,6 +842,32 @@ class MinimaxEngine(Engine):
                 self.logger.log_info(f"Only one legal move available - stopping iterative deepening")
                 break
             
+            # Check if mate or mate in 2 was found (any iteration)
+            if first_completed_move is not None and best_move is not None:
+                is_mate, distance_to_mate = self._is_mate_found(best_value, best_line)
+                if is_mate:
+                    best_move_san = "N/A"
+                    try:
+                        best_move_san = board.san(best_move)
+                    except Exception:
+                        best_move_san = best_move.uci()
+                    if distance_to_mate == 0:
+                        self.logger.log_info(f"Checkmate found: {best_move_san} - stopping iterative deepening")
+                    else:
+                        self.logger.log_info(f"Mate in {distance_to_mate + 1} found: {best_move_san} - stopping iterative deepening")
+                    break
+            
+            # Check if clear best capture was found (after first iteration)
+            if iteration == 1 and first_completed_move is not None and best_move is not None:
+                if self._is_clear_best_capture(board, best_move, sorted_moves[0]):
+                    best_move_san = "N/A"
+                    try:
+                        best_move_san = board.san(best_move)
+                    except Exception:
+                        best_move_san = best_move.uci()
+                    self.logger.log_info(f"Clear best capture detected: {best_move_san} - stopping iterative deepening")
+                    break
+            
             # Prepare for next iteration
             current_depth += 2  # Increment by 2 plies to keep same side to move
             iteration += 1
@@ -1008,6 +1060,7 @@ class MinimaxEngine(Engine):
             self.visualizer.enter_node(board, None, 0, alpha, beta, True)
             
             # Perform quiescence search
+            # Start quiescence depth at 0 (quiescence depth, not total depth)
             eval_score, line, status = self._quiescence(board, alpha, beta, 0, game_stage)
             
             # Exit quiescence node for visualization
@@ -1318,8 +1371,15 @@ class MinimaxEngine(Engine):
                 return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
             
         # Limit quiescence depth to prevent infinite loops
-        # Calculate maximum quiescence depth as: main_search_depth + additional_depth_limit
-        max_quiescence_depth = self.depth + self.quiescence_additional_depth_limit
+        # depth represents quiescence depth (starting at 0), limit is additional depth beyond base search
+        # Derive max depth from the individual move type limits
+        max_quiescence_depth = max(
+            self.quiescence_additional_depth_limit_captures,
+            self.quiescence_additional_depth_limit_checks,
+            self.quiescence_additional_depth_limit_promotions,
+            self.quiescence_additional_depth_limit_queen_defense,
+            self.quiescence_additional_depth_limit_value_threshold
+        )
         if depth > max_quiescence_depth:
             return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
         
@@ -1388,8 +1448,23 @@ class MinimaxEngine(Engine):
 
                 beta = min(beta, stand_pat)
             
-            # Search captures and checks for tactical accuracy
-            moves_to_search = self._get_quiescence_moves(board)
+            # Search captures, checks, and promotions for tactical accuracy
+            # Determine which move types to include based on quiescence depth
+            # The limits specify additional depth beyond base search, so check if quiescence depth is within limit
+            include_captures = depth <= self.quiescence_additional_depth_limit_captures
+            include_checks = depth <= self.quiescence_additional_depth_limit_checks
+            include_promotions = depth <= self.quiescence_additional_depth_limit_promotions
+            include_queen_defense = depth <= self.quiescence_additional_depth_limit_queen_defense
+            include_value_threshold = depth <= self.quiescence_additional_depth_limit_value_threshold
+            
+            moves_to_search = self._get_quiescence_moves(
+                board,
+                include_captures=include_captures,
+                include_checks=include_checks,
+                include_promotions=include_promotions,
+                include_queen_defense=include_queen_defense,
+                include_value_threshold=include_value_threshold
+            )
             
             if not moves_to_search:
                 # If not in check and no captures/checks, return stand pat
@@ -1437,6 +1512,65 @@ class MinimaxEngine(Engine):
         else:
             return beta, best_line, SearchStatus.COMPLETE
     
+    def _has_pawns_on_promotion_rank(self, board):
+        """
+        Check if there are pawns on the pre-promotion rank (7th rank for white, 2nd rank for black).
+        This is a fast bitboard check to determine if promotions are possible.
+        
+        Args:
+            board: Current board state
+            
+        Returns:
+            True if there are pawns on the pre-promotion rank, False otherwise
+        """
+        turn = board.turn
+        
+        # Get pawns for the side to move
+        pawns_bb = board.pieces(chess.PAWN, turn)
+        
+        if not pawns_bb:
+            return False
+        
+        # Define promotion rank based on color
+        if turn == chess.WHITE:
+            promotion_rank = 6  # 7th rank (0-indexed)
+        else:
+            promotion_rank = 1  # 2nd rank (0-indexed)
+        
+        # Check if any pawns are on the promotion rank using bitboard mask
+        promotion_rank_mask = chess.BB_RANKS[promotion_rank]
+        return bool(pawns_bb & promotion_rank_mask)
+    
+    def _get_promotion_value(self, board, move):
+        """
+        Calculate the net value of a promotion move for sorting.
+        
+        Net value = value of promoted piece - value of pawn + value of captured piece (if any)
+        Higher values are searched first to improve pruning.
+        
+        Args:
+            board: Current board state
+            move: The promotion move to evaluate
+            
+        Returns:
+            Promotion net value for sorting
+        """
+        # Value of promoted piece
+        promoted_piece_value = self.mvv_lva_values.get(move.promotion, 0)
+        
+        # Value of pawn being promoted (always 1)
+        pawn_value = self.mvv_lva_values[chess.PAWN]
+        
+        # Value of captured piece (if any)
+        captured_piece_value = 0
+        if board.is_capture(move):
+            captured_piece_type = board.piece_type_at(move.to_square)
+            if captured_piece_type is not None:
+                captured_piece_value = self.mvv_lva_values[captured_piece_type]
+        
+        # Net value = promoted piece - pawn + captured piece
+        return promoted_piece_value - pawn_value + captured_piece_value
+    
     def _get_capture_value(self, board, move):
         """
         Calculate the value of a capture move for MVV-LVA sorting.
@@ -1461,6 +1595,126 @@ class MinimaxEngine(Engine):
         # Higher values = more promising captures
         return self.mvv_lva_values[victim_piece_type] * 10 - self.mvv_lva_values[attacker_piece_type]
     
+    def _is_mate_found(self, best_value, best_line):
+        """
+        Check if a mate (checkmate) or mate in 2 (distance to mate = 1) was found.
+        
+        Args:
+            best_value: Best evaluation value from search
+            best_line: Principal variation (line of moves)
+            
+        Returns:
+            Tuple of (is_mate, distance_to_mate) where:
+            - is_mate: True if mate or mate in 2 was found
+            - distance_to_mate: Distance to mate (0 = checkmate, 1 = mate in 2)
+        """
+        checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+        
+        # Check if evaluation indicates a mate
+        # Mate evaluations are: checkmate_bonus - distance_to_mate
+        # So checkmate_bonus - 1 <= abs(eval) <= checkmate_bonus + 1000 (with some tolerance)
+        abs_eval = abs(best_value)
+        
+        if abs_eval >= checkmate_bonus - 1 and abs_eval <= checkmate_bonus + 1000:
+            # This is a mate evaluation
+            # Distance to mate is encoded in the evaluation
+            # Format: checkmate_bonus - distance_to_mate (for winning side)
+            if best_value > 0:  # White is winning
+                distance_to_mate = checkmate_bonus - best_value
+            else:  # Black is winning (negative eval: -(checkmate_bonus - distance))
+                distance_to_mate = checkmate_bonus + best_value  # best_value is negative
+            
+            # Ensure distance_to_mate is an integer and non-negative
+            distance_to_mate = int(round(distance_to_mate))
+            if distance_to_mate < 0:
+                distance_to_mate = 0
+            
+            # Also check the line length as a backup
+            if best_line:
+                line_distance = len(best_line)
+                # Use the minimum of the two (evaluation-based and line-based)
+                distance_to_mate = min(distance_to_mate, line_distance)
+            
+            # Return True if mate (distance 0) or mate in 2 (distance 1)
+            if distance_to_mate <= 1:
+                return True, distance_to_mate
+        
+        return False, None
+    
+    def _is_clear_best_capture(self, board, best_move, shallow_search_top_move):
+        """
+        Check if a move is a clear best capture that warrants early termination.
+        
+        Criteria:
+        1. Move was the top move from shallow search
+        2. Move is the top move from first iterative deepening iteration
+        3. Move is a capture
+        4. Captured piece value - capturing piece value > -50 (allows knight/bishop captures,
+           but blocks risky captures like queen capturing pawn)
+        
+        This heuristic helps save time in obvious positions where a capture is clearly best,
+        without needing to search deeper. The -50 threshold filters out risky captures that
+        might have hidden flaws discovered at deeper depths.
+        
+        Args:
+            board: Current board state
+            best_move: Best move from first iterative deepening iteration
+            shallow_search_top_move: Top move from shallow search (depth 2)
+            
+        Returns:
+            True if move meets all criteria for clear best capture, False otherwise
+        """
+        # Check if feature is enabled
+        if not self.evaluation_manager.evaluator.config.get("clear_best_capture_enabled", True):
+            return False
+        
+        # 1. Check if move was top from shallow search
+        if best_move != shallow_search_top_move:
+            return False
+        
+        # 2. Check if move is a capture
+        if not board.is_capture(best_move):
+            return False
+        
+        # 3. Check capture value threshold (captured - capturing > -50)
+        # Get piece values from config
+        piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
+        
+        # Map piece types to config keys
+        piece_type_to_key = {
+            chess.PAWN: "pawn",
+            chess.KNIGHT: "knight",
+            chess.BISHOP: "bishop",
+            chess.ROOK: "rook",
+            chess.QUEEN: "queen"
+        }
+        
+        # Get captured piece value
+        captured_piece_type = board.piece_type_at(best_move.to_square)
+        if captured_piece_type is None or captured_piece_type not in piece_type_to_key:
+            return False
+        
+        captured_piece_key = piece_type_to_key[captured_piece_type]
+        captured_piece_value = piece_values.get(captured_piece_key, 0)
+        
+        # Get capturing piece value
+        capturing_piece_type = board.piece_type_at(best_move.from_square)
+        if capturing_piece_type is None or capturing_piece_type not in piece_type_to_key:
+            return False
+        
+        capturing_piece_key = piece_type_to_key[capturing_piece_type]
+        capturing_piece_value = piece_values.get(capturing_piece_key, 0)
+        
+        # Check threshold: captured - capturing > -50
+        capture_value_diff = captured_piece_value - capturing_piece_value
+        threshold = self.evaluation_manager.evaluator.config.get("clear_best_capture_threshold", -50)
+        
+        if capture_value_diff <= threshold:
+            return False
+        
+        # All criteria met
+        return True
+    
 
     
     def _get_sorted_moves_optimized(self, board, depth=0):
@@ -1468,11 +1722,12 @@ class MinimaxEngine(Engine):
         Optimized move generation and sorting with killer move support.
         
         Move order:
-        1. Winning captures (MVV-LVA > 0)
-        2. Killer moves
-        3. Other captures (MVV-LVA <= 0)
-        4. Checks
-        5. Non-captures
+        1. Promotions (highest priority)
+        2. Winning captures (MVV-LVA > 0)
+        3. Killer moves
+        4. Other captures (MVV-LVA <= 0)
+        5. Checks
+        6. Non-captures
         
         Args:
             board: Current board state
@@ -1482,6 +1737,7 @@ class MinimaxEngine(Engine):
             List of moves sorted by priority
         """
         legal_moves = board.legal_moves
+        promotions = []
         winning_captures = []
         other_captures = []
         killer_moves = []
@@ -1493,11 +1749,16 @@ class MinimaxEngine(Engine):
         
         # Single pass to categorize moves
         for move in legal_moves:
-            if board.is_capture(move):
+            # Check for promotions first (highest priority)
+            if move.promotion:
+                # Store promotion with its net value for sorting
+                promotion_value = self._get_promotion_value(board, move)
+                promotions.append((move, promotion_value))
+            elif board.is_capture(move):
                 # Calculate MVV-LVA value for capture
                 capture_value = self._get_capture_value(board, move)
                 if capture_value > 0:
-                    # Winning capture - highest priority
+                    # Winning capture - high priority
                     winning_captures.append((move, capture_value))
                 elif move in current_killers:
                     # Non-winning capture that is also a killer move - prioritize as killer
@@ -1508,10 +1769,15 @@ class MinimaxEngine(Engine):
             elif move in current_killers:
                 # Non-capture killer move
                 killer_moves.append((move, current_killers[move]))
-            elif board.is_into_check(move):
+            elif self._is_check_fast(board, move):
                 checks.append(move)
             else:
                 non_captures.append(move)
+        
+        # Sort promotions by net value (highest first) - zero overhead if promotions list is empty
+        if promotions:
+            promotions.sort(key=lambda x: x[1], reverse=True)
+        sorted_promotions = [move for move, _ in promotions]
         
         # Sort winning captures by MVV-LVA (highest first)
         winning_captures.sort(key=lambda x: x[1], reverse=True)
@@ -1529,8 +1795,9 @@ class MinimaxEngine(Engine):
         if killer_moves:
             self.killer_moves_used += len(killer_moves)
         
-        # Combine moves in the specified order: winning captures first, then killer moves by count, then rest
+        # Combine moves in the specified order: promotions first, then winning captures, then killer moves, then rest
         result = []
+        result.extend(sorted_promotions)
         result.extend(sorted_winning_captures)
         result.extend(sorted_killer_moves)
         result.extend(sorted_other_captures)
@@ -1567,29 +1834,68 @@ class MinimaxEngine(Engine):
         self.killer_moves_stored = 0
         self.killer_moves_used = 0
 
-    def predict_time(self, nodes: int, moves: int, num_pieces: int) -> dict[int, float]:
+    @staticmethod
+    def predict_time(nodes: int, moves: int, num_pieces: int | None = None) -> dict[int, float]:
         """
-        Predict search time for different depths based on nodes, moves, and piece count from shallow search.
-        
-        Args:
-            nodes: Number of nodes searched in shallow search
-            moves: Number of moves evaluated in shallow search
-            num_pieces: Number of pieces on the board
-            
-        Returns:
-            Dictionary mapping depth to predicted time in seconds
+        Return predicted full-search time (seconds) at depths 4, 6, 8, 10.
+        Per-depth linear models in (nodes, moves, piece-bucket) with 4x penalty
+        on underestimates, plus multiplicative depth ratios:
+          t6 >= r46 * t4, t8 >= r68 * t6, t10 >= r8_10 * t8.
         """
-        # Depth-3 base with pieces (censored-aware & asymmetric-trained; underestimates ×2; timeouts as lower bounds)
-        a, b, p, c = 0.00030074839, -0.006088846, 0.096233457, -1.1406804
-        r35, r57 = 8.6743051, 2.2311444  # 3→5, then 5→7
-        t3 = max(0.0, a*nodes + b*moves + p*num_pieces + c)
 
-        # Illustrative results from this model:
-        # nodes=1,000, moves=5,  pieces=32 -> t3=2.21s, t5=19.16s, t7=42.75s
-        # nodes=5,000, moves=30, pieces=32 -> t3=3.26s, t5=28.28s, t7=63.09s
-        # nodes=5,920, moves=36, pieces=31 -> t3=3.40s, t5=29.53s, t7=65.88s
+        p = 32 if num_pieces is None else int(num_pieces)
+        if p <= 16:
+            bucket = "end"
+        elif p <= 26:
+            bucket = "mid"
+        else:
+            bucket = "open"
 
-        return {3: t3, 5: t3*r35, 7: t3*r35*r57}
+        def lin(nodes: int, moves: int, bucket: str,
+                a: float, b: float, c_open: float, c_mid: float, c_end: float) -> float:
+            c = c_open if bucket == "open" else (c_mid if bucket == "mid" else c_end)
+            t = a * nodes + b * moves + c
+            return max(0.05, float(t))
+
+        # Depth-4 linear + scale
+        a4, b4 = 0.0005335, -0.00820
+        c4_open, c4_mid, c4_end = 0.221, -0.163, -0.196
+        s4 = 1.44
+        t4 = lin(nodes, moves, bucket, a4, b4, c4_open, c4_mid, c4_end) * s4
+
+        # Depth-6 independent linear + scale
+        a6, b6 = 0.000734, 0.1443
+        c6_open, c6_mid, c6_end = 9.996, 5.012, 1.842
+        s6 = 1.315
+        t6_ind = lin(nodes, moves, bucket, a6, b6, c6_open, c6_mid, c6_end) * s6
+
+        # Depth-8 independent linear + scale
+        a8, b8 = 0.00388, 0.1977
+        c8_open, c8_mid, c8_end = 3.864, 5.912, 5.679
+        s8 = 1.345
+        t8_ind = lin(nodes, moves, bucket, a8, b8, c8_open, c8_mid, c8_end) * s8
+
+        # Depth-10 independent linear + scale
+        a10, b10 = -0.00443, -2.354
+        c10_open, c10_mid, c10_end = 8.338, 8.338, 16.675
+        s10 = 1.0
+        t10_ind = lin(nodes, moves, bucket, a10, b10, c10_open, c10_mid, c10_end) * s10
+
+        # Multiplicative depth ratios (trained)
+        r46 = 2.78
+        r68 = 1.0
+        r8_10 = 1.0
+
+        t6_mult = r46 * t4
+        t6 = max(t6_ind, t6_mult)
+
+        t8_mult = r68 * t6
+        t8 = max(t8_ind, t8_mult)
+
+        t10_mult = r8_10 * t8
+        t10 = max(t10_ind, t10_mult)
+
+        return {4: float(t4), 6: float(t6), 8: float(t8), 10: float(t10)}
 
     def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget, starting_depth):
         """
@@ -1628,7 +1934,7 @@ class MinimaxEngine(Engine):
         
         if not self.quiet:
             self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}, pieces={num_pieces}")
-            self.logger.log_info(f"Predicted times: depth 3={predicted_times[3]:.2f}s, depth 5={predicted_times[5]:.2f}s, depth 7={predicted_times[7]:.2f}s")
+            self.logger.log_info(f"Predicted times: depth 4={predicted_times[4]:.2f}s, depth 6={predicted_times[6]:.2f}s, depth 8={predicted_times[8]:.2f}s, depth 10={predicted_times[10]:.2f}s")
             self.logger.log_info(f"Time budget: {time_budget:.2f}s, available: {available_time:.2f}s, optimal depth: {optimal_depth}")
         
         return optimal_depth
@@ -1824,21 +2130,50 @@ class MinimaxEngine(Engine):
             if not self.quiet:
                 self.logger.log(f"⚠️  Tablebase error: {e}")
             return None 
-    def _get_quiescence_moves(self, board):
+
+    def _get_quiescence_moves(self, board, include_captures=True, include_checks=False, 
+                               include_promotions=False, include_queen_defense=False, include_value_threshold=False):
         """
         Get moves to search in quiescence, ordered by priority:
-        1. Captures (ordered by MVV-LVA)
-        2. Checks
-        3. Defensive moves (if configured)
+        1. Promotions (highest priority)
+        2. Captures (ordered by MVV-LVA)
+        3. Checks
+        4. Defensive moves (if configured)
         
         Args:
             board: Current board state
+            include_captures: Whether to include captures
+            include_checks: Whether to include checks
+            include_promotions: Whether to include promotion moves
+            include_queen_defense: Whether to include queen defensive moves
+            include_value_threshold: Whether to include value threshold defensive moves
             
         Returns:
             List of moves to search in quiescence, ordered by priority
         """
-        # Generate legal moves once
-        legal_moves = list(board.legal_moves)
+        # Check if promotions are possible (fast bitboard check)
+        has_promotions = include_promotions and self._has_pawns_on_promotion_rank(board)
+        
+        # Collect promotions first if enabled and available (highest priority)
+        promotions = []
+        legal_moves = None  # Will be set if we need to generate all legal moves
+        
+        if has_promotions:
+            # Generate all legal moves once (we'll need them for categorization anyway)
+            legal_moves = list(board.legal_moves)
+            promotions = [move for move in legal_moves if move.promotion]
+        
+        # Optimization: if only captures are needed (and no promotions), use the faster generate_legal_captures()
+        # If promotions are possible, we need to generate all legal moves anyway, so this optimization doesn't apply
+        if include_captures and not include_checks and not include_queen_defense and not include_value_threshold and not has_promotions:
+            captures = list(board.generate_legal_captures())
+            # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
+            captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
+            return promotions + captures
+        
+        # Otherwise, generate all legal moves and categorize (if not already generated)
+        if legal_moves is None:
+            legal_moves = list(board.legal_moves)
         
         # Categorize moves by type
         captures = []
@@ -1846,34 +2181,108 @@ class MinimaxEngine(Engine):
         defensive_moves = []
         
         for move in legal_moves:
+            # Skip promotions if we already collected them separately
+            if has_promotions and move.promotion:
+                continue
+            
             is_capture = board.is_capture(move)
             
-            if is_capture:
-                # Always include captures
+            if is_capture and include_captures:
+                # Include captures
                 captures.append(move)
-            else:
-                # Check if this non-capture move gives check (only if checks are enabled)
-                if self.quiescence_include_checks and board.is_into_check(move):
+            elif not is_capture:
+                # Check if this non-capture move gives check
+                if include_checks and board.gives_check(move):
                     checks.append(move)
-                # Check if this is a defensive move (only if defensive moves are enabled)
-                elif (self.quiescence_include_queen_defense or self.quiescence_include_value_threshold) and self._is_defensive_move_fast(board, move):
-                    defensive_moves.append(move)
+                # Check if this is a defensive move (queen defense)
+                elif include_queen_defense:
+                    if self._is_defensive_move_fast(board, move, include_queen_defense=True, include_value_threshold=False):
+                        defensive_moves.append(move)
+                # Check if this is a defensive move (value threshold)
+                elif include_value_threshold:
+                    if self._is_defensive_move_fast(board, move, include_queen_defense=False, include_value_threshold=True):
+                        defensive_moves.append(move)
         
         # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
         captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
         
-        # Combine moves in priority order: captures first, then checks, then defensive moves
-        moves_to_search = captures + checks + defensive_moves
+        # Combine moves in priority order: promotions first, then captures, then checks, then defensive moves
+        moves_to_search = promotions + captures + checks + defensive_moves
         
         return moves_to_search
     
-    def _is_defensive_move_fast(self, board, move):
+    def _is_check_fast(self, board, move):
         """
-        Fast defensive move check using cached configuration values.
+        Quickly determine if a move gives check without making the move.
+        This primarily checks for direct checks on the move's destination square.
+        
+        Note: This method might not detect all *discovered* checks perfectly
+        without a more complex bitboard implementation, but it is much faster
+        than board.gives_check() and captures most cases.
         
         Args:
             board: Current board state
             move: The move to check
+            
+        Returns:
+            True if the move gives check (approximately), False otherwise
+        """
+        # Identify the opponent's king square
+        opponent_color = not board.turn
+        opponent_king_square = board.king(opponent_color)
+        if opponent_king_square is None:
+            # Should not happen in a normal game, but handle for safety
+            return False
+        
+        # Get the piece type of the moving piece
+        piece_type = board.piece_type_at(move.from_square)
+        if piece_type is None:
+            return False
+        
+        # Check if the destination square of the move directly attacks the opponent's king square
+        # This uses the built-in attack generators of the python-chess library
+        if piece_type == chess.PAWN:
+            return bool(chess.BB_PAWN_ATTACKS[board.turn][move.to_square] & chess.BB_SQUARES[opponent_king_square])
+        elif piece_type == chess.KNIGHT:
+            return bool(chess.BB_KNIGHT_ATTACKS[move.to_square] & chess.BB_SQUARES[opponent_king_square])
+        elif piece_type == chess.BISHOP:
+            # For sliding pieces, check if king is on same diagonal and path is clear
+            ray_bb = chess.ray(move.to_square, opponent_king_square)
+            if ray_bb and chess.square_distance(move.to_square, opponent_king_square) > 0:
+                # Check if the path is clear (no pieces blocking)
+                between_bb = chess.between(move.to_square, opponent_king_square)
+                return (between_bb & board.occupied) == 0
+            return False
+        elif piece_type == chess.ROOK:
+            # Check if king is on same rank or file and path is clear
+            ray_bb = chess.ray(move.to_square, opponent_king_square)
+            if ray_bb and chess.square_distance(move.to_square, opponent_king_square) > 0:
+                between_bb = chess.between(move.to_square, opponent_king_square)
+                return (between_bb & board.occupied) == 0
+            return False
+        elif piece_type == chess.QUEEN:
+            # Queen can move like bishop or rook
+            ray_bb = chess.ray(move.to_square, opponent_king_square)
+            if ray_bb and chess.square_distance(move.to_square, opponent_king_square) > 0:
+                between_bb = chess.between(move.to_square, opponent_king_square)
+                return (between_bb & board.occupied) == 0
+            return False
+        elif piece_type == chess.KING:
+            # A king move cannot give check to the other king unless the other king is on an adjacent square,
+            # which is an illegal position anyway. So this can safely return False.
+            return False
+        
+        return False
+    
+    def _is_defensive_move_fast(self, board, move, include_queen_defense=False, include_value_threshold=False):
+        """
+        Fast defensive move check using provided configuration flags.
+        
+        Args:
+            board: Current board state
+            move: The move to check
+            include_queen_defense: Whether to check for queen defensive moves
+            include_value_threshold: Whether to check for value threshold defensive moves
             
         Returns:
             True if the move is defensive, False otherwise
@@ -1890,11 +2299,11 @@ class MinimaxEngine(Engine):
             return False
         
         # Queen defense: only consider queen defensive moves
-        if self.quiescence_include_queen_defense and piece.piece_type == chess.QUEEN:
+        if include_queen_defense and piece.piece_type == chess.QUEEN:
             return True
         
         # Value threshold: consider moves for pieces above value threshold
-        if self.quiescence_include_value_threshold:
+        if include_value_threshold:
             piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
             piece_symbol = piece.symbol().upper()
             if piece_symbol in piece_values:

@@ -10,6 +10,7 @@ Author: Chess Engine Team
 import chess
 from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Optional, Any
+from dataclasses import dataclass
 import json
 import os
 
@@ -30,6 +31,66 @@ PIECE_TYPE_TO_BITBOARD = {
     chess.QUEEN: lambda b: b.queens,
     chess.KING: lambda b: b.kings,
 }
+
+
+@dataclass
+class PieceBitboards:
+    """Precomputed bitboards for all piece types and colors for efficient evaluation."""
+    white_pawns: int
+    black_pawns: int
+    white_knights: int
+    black_knights: int
+    white_bishops: int
+    black_bishops: int
+    white_rooks: int
+    black_rooks: int
+    white_queens: int
+    black_queens: int
+    white_kings: int
+    black_kings: int
+    castling_flags: int = 0
+    piece_count_signature: int = 0
+    bitboard_signature: int = 0
+    pawn_structure_signature: int = 0
+    king_safety_signature: int = 0
+    
+    def __post_init__(self):
+        """Compute signatures from bitboards for caching."""
+        # Piece count signature: 40 bits for piece counts (kings excluded)
+        self.piece_count_signature = (
+            (chess.popcount(self.white_pawns) << 36) |
+            (chess.popcount(self.black_pawns) << 32) |
+            (chess.popcount(self.white_knights) << 28) |
+            (chess.popcount(self.black_knights) << 24) |
+            (chess.popcount(self.white_bishops) << 20) |
+            (chess.popcount(self.black_bishops) << 16) |
+            (chess.popcount(self.white_rooks) << 12) |
+            (chess.popcount(self.black_rooks) << 8) |
+            (chess.popcount(self.white_queens) << 4) |
+            chess.popcount(self.black_queens)
+        )
+        
+        # Bitboard signature: hash of all piece bitboards (used for positional and mobility caches)
+        self.bitboard_signature = hash((
+            self.white_pawns, self.black_pawns,
+            self.white_knights, self.black_knights,
+            self.white_bishops, self.black_bishops,
+            self.white_rooks, self.black_rooks,
+            self.white_queens, self.black_queens,
+            self.white_kings, self.black_kings
+        ))
+        
+        # Pawn structure signature: hash of just pawn bitboards
+        self.pawn_structure_signature = hash((self.white_pawns, self.black_pawns))
+        
+        # King safety signature: hash of king bitboards + castling flags + pawn bitboards
+        self.king_safety_signature = hash((
+            self.white_kings,
+            self.black_kings,
+            self.castling_flags,
+            self.white_pawns,
+            self.black_pawns
+        ))
 
 
 class BaseEvaluator(ABC):
@@ -91,6 +152,13 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Store the starting position's side to move for simplification logic
         self.starting_side_to_move = None
         
+        # Evaluation caches: keyed by signatures, cleared at the start of each get_move call
+        self.material_cache: Dict[int, float] = {}
+        self.positional_cache: Dict[int, float] = {}
+        self.mobility_cache: Dict[int, float] = {}
+        self.pawn_structure_cache: Dict[int, float] = {}
+        self.king_safety_cache: Dict[int, float] = {}
+        
     
     def _set_starting_position(self, board: chess.Board):
         """
@@ -101,6 +169,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         """
         self.starting_piece_count = chess.popcount(board.occupied)
         self.starting_side_to_move = board.turn
+    
+    def clear_eval_cache(self):
+        """Clear all evaluation caches. Called at the start of each get_move."""
+        self.material_cache.clear()
+        self.positional_cache.clear()
+        self.mobility_cache.clear()
+        self.pawn_structure_cache.clear()
+        self.king_safety_cache.clear()
     
     def _determine_game_stage(self, board: chess.Board) -> int:
         """
@@ -151,7 +227,6 @@ class HandcraftedEvaluator(BaseEvaluator):
             "simplification_material_diff_multiplier": 0.001,
             "checkmate_bonus": 100000,
             "draw_value": 0,
-            "quiescence_additional_depth_limit": 4,
             "cache_size_limit": 10000,
             "mobility_enabled": {
                 "knight": False,
@@ -359,11 +434,11 @@ class HandcraftedEvaluator(BaseEvaluator):
             -10, -5, 0, 5, 5, 0, -5, -10,   # 1st rank - moderate
             -5, 0, 5, 10, 10, 5, 0, -5,     # 2nd rank - good
             0, 5, 10, 15, 15, 10, 5, 0,      # 3rd rank - very good
-            5, 10, 15, 15, 15, 15, 10, 5,    # 4th rank - excellent
-            5, 10, 15, 15, 15, 15, 10, 5,    # 5th rank - excellent
-            0, 5, 10, 15, 15, 10, 5, 0,      # 6th rank - very good
+            5, 10, 20, 20, 20, 20, 10, 5,    # 4th rank - excellent
+            5, 10, 20, 20, 20, 20, 10, 5,    # 5th rank - excellent
+            0, 5, 15, 15, 15, 15, 5, 0,      # 6th rank - very good
             -5, 0, 5, 10, 10, 5, 0, -5,     # 7th rank - good
-            -10, -5, 0, 5, 5, 0, -5, -10     # 8th rank - moderate
+            -10, 0, 0, 5, 5, 0, 0, -10     # 8th rank - moderate
         ]
         
         # Combine endgame tables
@@ -467,8 +542,13 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Use consolidated function with component breakdown
         return self._evaluate_position(board, game_stage, return_components=True)
     
-    def _evaluate_material(self, board: chess.Board) -> float:
+    def _evaluate_material(self, board: chess.Board, bitboards: PieceBitboards) -> float:
         """Evaluate material balance using optimized bitboard operations with simplification logic"""
+        
+        # Check cache first using piece_count_signature as key
+        signature = bitboards.piece_count_signature
+        if signature in self.material_cache:
+            return self.material_cache[signature]
         
         # Hoist frequently accessed attributes to locals for performance
         piece_values = self.piece_values
@@ -476,17 +556,25 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         material_score = 0
         
+        # Calculate total material on board for simplification
+        total_material_on_board = 0
+        
+        # Use precomputed bitboards for each piece type
+        piece_bitboard_map = {
+            chess.PAWN: (bitboards.white_pawns, bitboards.black_pawns),
+            chess.KNIGHT: (bitboards.white_knights, bitboards.black_knights),
+            chess.BISHOP: (bitboards.white_bishops, bitboards.black_bishops),
+            chess.ROOK: (bitboards.white_rooks, bitboards.black_rooks),
+            chess.QUEEN: (bitboards.white_queens, bitboards.black_queens),
+        }
+        
         # Cache bishop counts for reuse
         white_bishops = 0
         black_bishops = 0
         
-        # Calculate total material on board for simplification
-        total_material_on_board = 0
-        
         for piece_type in piece_values:
-            # Use direct bitboard access for better performance
-            white_bb = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.WHITE]
-            black_bb = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.BLACK]
+            # Use precomputed bitboards
+            white_bb, black_bb = piece_bitboard_map[piece_type]
             white_count = chess.popcount(white_bb)
             black_count = chess.popcount(black_bb)
             
@@ -533,20 +621,35 @@ class HandcraftedEvaluator(BaseEvaluator):
                     # This makes the engine prefer to maintain its advantage through simplification
                     material_score *= simplification_factor
         
-        
+        # Store result in cache before returning
+        self.material_cache[signature] = material_score
         return material_score
     
-    def _evaluate_positional(self, board: chess.Board, game_stage: int) -> float:
+    def _evaluate_positional(self, board: chess.Board, game_stage: int, bitboards: PieceBitboards) -> float:
         """Evaluate positional factors using optimized piece-square tables and mobility"""
+        # Check cache first using bitboard_signature as key
+        signature = bitboards.bitboard_signature
+        if signature in self.positional_cache:
+            return self.positional_cache[signature]
+        
         # Choose appropriate piece-square tables based on game stage
         tables = self.endgame_piece_square_tables if game_stage == ENDGAME else self.piece_square_tables
         
         positional_score = 0
         
+        # Map piece types to precomputed bitboards
+        piece_bitboard_map = {
+            chess.PAWN: (bitboards.white_pawns, bitboards.black_pawns),
+            chess.KNIGHT: (bitboards.white_knights, bitboards.black_knights),
+            chess.BISHOP: (bitboards.white_bishops, bitboards.black_bishops),
+            chess.ROOK: (bitboards.white_rooks, bitboards.black_rooks),
+            chess.QUEEN: (bitboards.white_queens, bitboards.black_queens),
+            chess.KING: (bitboards.white_kings, bitboards.black_kings),
+        }
+        
         for piece_type in tables:
-            # Use direct bitboard access for better performance
-            white_squares = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.WHITE]
-            black_squares = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[chess.BLACK]
+            # Use precomputed bitboards
+            white_squares, black_squares = piece_bitboard_map[piece_type]
             
             # Add positional bonuses for White pieces
             for square in chess.scan_forward(white_squares):
@@ -556,9 +659,11 @@ class HandcraftedEvaluator(BaseEvaluator):
             for square in chess.scan_forward(black_squares):
                 positional_score -= tables[piece_type][self.cached_square_mirror[square]]
         
+        # Store result in cache before returning
+        self.positional_cache[signature] = positional_score
         return positional_score
     
-    def _evaluate_mobility(self, board: chess.Board, game_stage: int) -> float:
+    def _evaluate_mobility(self, board: chess.Board, game_stage: int, bitboards: PieceBitboards) -> float:
         """
         Evaluate piece mobility using efficient bitboard operations.
         
@@ -568,14 +673,19 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Skip mobility evaluation for endgames
         if game_stage == ENDGAME:
             return 0.0
+        
+        # Check cache first using bitboard_signature as key
+        signature = bitboards.bitboard_signature
+        if signature in self.mobility_cache:
+            return self.mobility_cache[signature]
             
         mobility_score = 0
         
         # Get pieces to exclude during mobility calculation based on configuration
         if self.cached_mobility_exclude_pawns_only:
-            # Only exclude pawns (default)
-            white_pieces = board.pawns & board.occupied_co[chess.WHITE]
-            black_pieces = board.pawns & board.occupied_co[chess.BLACK]
+            # Only exclude pawns (default) - use precomputed bitboards
+            white_pieces = bitboards.white_pawns
+            black_pieces = bitboards.black_pawns
         else:
             # Exclude all friendly pieces
             white_pieces = board.occupied_co[chess.WHITE]
@@ -587,22 +697,30 @@ class HandcraftedEvaluator(BaseEvaluator):
         for piece_type in piece_types:
             # Check if mobility evaluation is enabled for this piece type
             if self.mobility_enabled.get(piece_type, True):  # Default to True if not configured
-                mobility_score += self._evaluate_piece_mobility(board, piece_type, chess.WHITE, white_pieces)
-                mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces)
+                mobility_score += self._evaluate_piece_mobility(board, piece_type, chess.WHITE, white_pieces, bitboards)
+                mobility_score -= self._evaluate_piece_mobility(board, piece_type, chess.BLACK, black_pieces, bitboards)
         
+        # Store result in cache before returning
+        self.mobility_cache[signature] = mobility_score
         return mobility_score
     
 
-    def _evaluate_king_safety(self, board: chess.Board) -> float:
+    def _evaluate_king_safety(self, board: chess.Board, bitboards: PieceBitboards) -> float:
         """
         Evaluate king safety using castling bonus and pawn shield.
         
         Args:
             board: Current board state
+            bitboards: Precomputed piece bitboards
             
         Returns:
             King safety score from White's perspective
         """
+        # Check cache first using king_safety_signature as key
+        signature = bitboards.king_safety_signature
+        if signature in self.king_safety_cache:
+            return self.king_safety_cache[signature]
+        
         king_safety_score = 0
         
         # Evaluate castling bonus
@@ -610,9 +728,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         king_safety_score += castling_bonus
         
         # Evaluate pawn shield bonus
-        pawn_shield_score = self._evaluate_pawn_shield(board)
+        pawn_shield_score = self._evaluate_pawn_shield(board, bitboards)
         king_safety_score += pawn_shield_score
         
+        # Store result in cache before returning
+        self.king_safety_cache[signature] = king_safety_score
         return king_safety_score
     
     def _evaluate_castling_bonus(self, board: chess.Board) -> float:
@@ -698,12 +818,13 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         return castling_rights_penalty
     
-    def _evaluate_pawn_shield(self, board: chess.Board) -> float:
+    def _evaluate_pawn_shield(self, board: chess.Board, bitboards: PieceBitboards) -> float:
         """
         Evaluate pawn shield - squares in front of king occupied by friendly pawns.
         
         Args:
             board: Current board state
+            bitboards: Precomputed piece bitboards
             
         Returns:
             Pawn shield score from White's perspective
@@ -716,17 +837,17 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Evaluate White's pawn shield
         if white_king_square is not None:
-            white_pawn_shield = self._count_pawn_shield(board, white_king_square, chess.WHITE)
+            white_pawn_shield = self._count_pawn_shield(board, white_king_square, chess.WHITE, bitboards)
             pawn_shield_score += white_pawn_shield * self.cached_pawn_shield_weight
         
         # Evaluate Black's pawn shield
         if black_king_square is not None:
-            black_pawn_shield = self._count_pawn_shield(board, black_king_square, chess.BLACK)
+            black_pawn_shield = self._count_pawn_shield(board, black_king_square, chess.BLACK, bitboards)
             pawn_shield_score -= black_pawn_shield * self.cached_pawn_shield_weight
         
         return pawn_shield_score
     
-    def _count_pawn_shield(self, board: chess.Board, king_square: int, color: bool) -> int:
+    def _count_pawn_shield(self, board: chess.Board, king_square: int, color: bool, bitboards: PieceBitboards) -> int:
         """
         Count how many shield files have a pawn of our color.
         Only counts when king is on queenside (a-c) or kingside (f-h).
@@ -735,6 +856,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             board: Current board state
             king_square: Square where the king is located
             color: Color of the pieces (WHITE or BLACK)
+            bitboards: Precomputed piece bitboards
             
         Returns:
             1 if all shield files have a pawn of our color, 0 otherwise
@@ -759,8 +881,9 @@ class HandcraftedEvaluator(BaseEvaluator):
             # Black pawns: ranks 5-6 (6th and 7th ranks, 0-indexed)
             shield_ranks = chess.BB_RANK_6 | chess.BB_RANK_7
         
-        # Use direct bitboard access and apply shield_ranks filter once
-        our_pawns = board.pawns & board.occupied_co[color] & shield_ranks
+        # Use precomputed pawn bitboard and apply shield_ranks filter
+        our_pawns_bb = bitboards.white_pawns if color == chess.WHITE else bitboards.black_pawns
+        our_pawns = our_pawns_bb & shield_ranks
         
         # Check each shield file for pawns on the correct ranks
         # Use boolean array indexed by shield file positions for efficiency
@@ -783,7 +906,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             return 0.5  # Middle file + one other file covered
         return 0.0  # Less than 2 files or middle file not covered
     
-    def _evaluate_pawn_structure(self, board: chess.Board) -> float:
+    def _evaluate_pawn_structure(self, board: chess.Board, bitboards: PieceBitboards) -> float:
         """
         Evaluate pawn structure using pawn islands and passed pawns.
         
@@ -793,6 +916,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         Args:
             board: Current board state
+            bitboards: Precomputed piece bitboards
             
         Returns:
             Pawn structure score from White's perspective (fewer islands is better, more passed pawns is better)
@@ -801,10 +925,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         if not self.cached_pawn_structure_enabled:
             return 0.0
         
-        # Precompute file occupancy for both colors (store bitboards, not just booleans)
-        # Use direct bitboard operations for better performance
-        white_pawns = board.pawns & board.occupied_co[chess.WHITE]
-        black_pawns = board.pawns & board.occupied_co[chess.BLACK]
+        # Check cache first using pawn_structure_signature as key
+        signature = bitboards.pawn_structure_signature
+        if signature in self.pawn_structure_cache:
+            return self.pawn_structure_cache[signature]
+        
+        # Use precomputed pawn bitboards
+        white_pawns = bitboards.white_pawns
+        black_pawns = bitboards.black_pawns
         white_files = [0] * 8  # Files a-h (0-7) - store bitboards
         black_files = [0] * 8
         
@@ -824,7 +952,11 @@ class HandcraftedEvaluator(BaseEvaluator):
         # More passed pawns is better, so we want (white_passed - black_passed)
         passed_pawns_score = (white_passed - black_passed) * self.cached_passed_pawn_bonus
         
-        return islands_score + passed_pawns_score
+        pawn_structure_score = islands_score + passed_pawns_score
+        
+        # Store result in cache before returning
+        self.pawn_structure_cache[signature] = pawn_structure_score
+        return pawn_structure_score
     
     def _evaluate_pawn_structure_with_files(self, board: chess.Board, color: bool, our_files: list[bool], enemy_files: list[bool]) -> tuple[int, float]:
         """
@@ -919,24 +1051,30 @@ class HandcraftedEvaluator(BaseEvaluator):
                 # Weight passed pawns by how far advanced they are
                 if is_passed:
                     if color == chess.WHITE:
-                        # White pawns: rank 6+ = full value, rank 5 = half value, rank 4- = skip
-                        if most_advanced_rank >= 5:  # Rank 6 or higher (0-indexed: rank 5+)
+                        # White pawns: rank 7 (rank 6 0-indexed) = 2.0, rank 6+ = full value, rank 5 = half value, rank 4- = 0.25
+                        if most_advanced_rank == 6:  # Rank 7 (0-indexed: rank 6)
+                            passed_pawns += 2.0
+                        elif most_advanced_rank >= 5:  # Rank 6 or higher (0-indexed: rank 5+)
                             passed_pawns += 1.0
                         elif most_advanced_rank == 4:  # Rank 5 (0-indexed: rank 4)
                             passed_pawns += 0.5
-                        # Rank 3 and below (ranks 4 and below) are skipped
+                        else:  # Rank 3 and below (ranks 4 and below) = 0.25
+                            passed_pawns += 0.25
                     else:
-                        # Black pawns: rank 3- = full value, rank 4 = half value, rank 5+ = skip
-                        if most_advanced_rank <= 2:  # Rank 3 or lower (0-indexed: rank 2-)
+                        # Black pawns: rank 2 (rank 1 0-indexed) = 2.0, rank 3- = full value, rank 4 = half value, rank 5+ = 0.25
+                        if most_advanced_rank == 1:  # Rank 2 (0-indexed: rank 1)
+                            passed_pawns += 2.0
+                        elif most_advanced_rank <= 2:  # Rank 3 or lower (0-indexed: rank 2-)
                             passed_pawns += 1.0
                         elif most_advanced_rank == 3:  # Rank 4 (0-indexed: rank 3)
                             passed_pawns += 0.5
-                        # Rank 4 and above (ranks 5 and above) are skipped
+                        else:  # Rank 4 and above (ranks 5 and above) = 0.25
+                            passed_pawns += 0.25
         
         return islands, passed_pawns
     
     def _evaluate_piece_mobility(self, board: chess.Board, piece_type: int, color: bool, 
-                                friendly_pieces: int) -> float:
+                                friendly_pieces: int, bitboards: PieceBitboards) -> float:
         """
         Evaluate mobility for a specific piece type and color using quality-based scoring.
         
@@ -945,13 +1083,23 @@ class HandcraftedEvaluator(BaseEvaluator):
             piece_type: Type of piece to evaluate (KNIGHT, BISHOP, ROOK, QUEEN)
             color: Color of the pieces (WHITE or BLACK)
             friendly_pieces: Bitboard of friendly pieces to exclude (pawns only or all pieces based on config)
+            bitboards: Precomputed piece bitboards
             
         Returns:
             Quality-weighted mobility score for this piece type and color
         """
         mobility_score = 0
-        # Use direct bitboard access for better performance
-        piece_squares = PIECE_TYPE_TO_BITBOARD[piece_type](board) & board.occupied_co[color]
+        
+        # Use precomputed bitboards directly based on piece type and color
+        if piece_type == chess.KNIGHT:
+            piece_squares = bitboards.white_knights if color == chess.WHITE else bitboards.black_knights
+        elif piece_type == chess.BISHOP:
+            piece_squares = bitboards.white_bishops if color == chess.WHITE else bitboards.black_bishops
+        elif piece_type == chess.ROOK:
+            piece_squares = bitboards.white_rooks if color == chess.WHITE else bitboards.black_rooks
+        else:
+            # Should not happen for mobility evaluation, but handle gracefully
+            return 0
         
         # Early exit if no pieces of this type
         if not piece_squares:
@@ -960,10 +1108,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Use cached values for performance
         weight = self.cached_mobility_weights[piece_type]
         
-        # Create pawn bitboards only for rook evaluation (cleaner approach)
+        # Use precomputed pawn bitboards for rook evaluation
         if piece_type == chess.ROOK:
-            white_pawns_bb = board.pawns & board.occupied_co[chess.WHITE]
-            black_pawns_bb = board.pawns & board.occupied_co[chess.BLACK]
+            white_pawns_bb = bitboards.white_pawns
+            black_pawns_bb = bitboards.black_pawns
         
         # Calculate mobility for each piece
         for square in chess.scan_forward(piece_squares):
@@ -1036,11 +1184,35 @@ class HandcraftedEvaluator(BaseEvaluator):
         Returns:
             Position evaluation score (float) or component breakdown (dict)
         """
-        # Calculate all components
-        material_score = self._evaluate_material(board)
-        positional_score = self._evaluate_positional(board, game_stage)
-        mobility_score = self._evaluate_mobility(board, game_stage)
-        pawn_structure_score = self._evaluate_pawn_structure(board)
+        # Phase 1: Precompute all piece-type × color bitboards once for efficiency
+        # Compute castling flags for king safety signature
+        castling_flags = (
+            ((1 if board.has_kingside_castling_rights(chess.WHITE) else 0) << 0) |
+            ((1 if board.has_queenside_castling_rights(chess.WHITE) else 0) << 1) |
+            ((1 if board.has_kingside_castling_rights(chess.BLACK) else 0) << 2) |
+            ((1 if board.has_queenside_castling_rights(chess.BLACK) else 0) << 3)
+        )
+        bitboards = PieceBitboards(
+            white_pawns=board.pawns & board.occupied_co[chess.WHITE],
+            black_pawns=board.pawns & board.occupied_co[chess.BLACK],
+            white_knights=board.knights & board.occupied_co[chess.WHITE],
+            black_knights=board.knights & board.occupied_co[chess.BLACK],
+            white_bishops=board.bishops & board.occupied_co[chess.WHITE],
+            black_bishops=board.bishops & board.occupied_co[chess.BLACK],
+            white_rooks=board.rooks & board.occupied_co[chess.WHITE],
+            black_rooks=board.rooks & board.occupied_co[chess.BLACK],
+            white_queens=board.queens & board.occupied_co[chess.WHITE],
+            black_queens=board.queens & board.occupied_co[chess.BLACK],
+            white_kings=board.kings & board.occupied_co[chess.WHITE],
+            black_kings=board.kings & board.occupied_co[chess.BLACK],
+            castling_flags=castling_flags,
+        )
+        
+        # Calculate all components using precomputed bitboards
+        material_score = self._evaluate_material(board, bitboards)
+        positional_score = self._evaluate_positional(board, game_stage, bitboards)
+        mobility_score = self._evaluate_mobility(board, game_stage, bitboards)
+        pawn_structure_score = self._evaluate_pawn_structure(board, bitboards)
         
         # Choose weights based on game stage
         if game_stage == ENDGAME:
@@ -1058,7 +1230,7 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # Calculate king safety only for non-endgame positions
         if game_stage != ENDGAME:
-            king_safety_score = self._evaluate_king_safety(board)
+            king_safety_score = self._evaluate_king_safety(board, bitboards)
         else:
             king_safety_score = 0.0
         
