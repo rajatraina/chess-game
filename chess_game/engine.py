@@ -666,7 +666,7 @@ class MinimaxEngine(Engine):
             remaining_time = time_budget - elapsed_time
             
             # Use predictive time management to determine optimal starting depth
-            optimal_starting_depth = self._predict_optimal_starting_depth(shallow_search_stats, remaining_time, starting_depth)
+            optimal_starting_depth = self._predict_optimal_starting_depth(shallow_search_stats, remaining_time, starting_depth, game_stage)
             self.logger.log_info(f"Predictive time management: elapsed={elapsed_time:.2f}s, remaining={remaining_time:.2f}s, using depth {optimal_starting_depth} as starting depth")
         else:
             # Use default starting depth
@@ -1835,12 +1835,18 @@ class MinimaxEngine(Engine):
         self.killer_moves_used = 0
 
     @staticmethod
-    def predict_time(nodes: int, moves: int, num_pieces: int | None = None) -> dict[int, float]:
+    def predict_time(nodes: int, moves: int, num_pieces: int | None = None, game_stage: int | None = None) -> dict[int, float]:
         """
         Return predicted full-search time (seconds) at depths 4, 6, 8, 10.
         Per-depth linear models in (nodes, moves, piece-bucket) with 4x penalty
         on underestimates, plus multiplicative depth ratios:
           t6 >= r46 * t4, t8 >= r68 * t6, t10 >= r8_10 * t8.
+        
+        Args:
+            nodes: Number of nodes searched in shallow search
+            moves: Number of moves evaluated in shallow search
+            num_pieces: Number of pieces on the board
+            game_stage: Game stage (0=OPENING, 1=MIDDLEGAME, 2=ENDGAME) for logging
         """
 
         p = 32 if num_pieces is None else int(num_pieces)
@@ -1897,7 +1903,7 @@ class MinimaxEngine(Engine):
 
         return {4: float(t4), 6: float(t6), 8: float(t8), 10: float(t10)}
 
-    def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget, starting_depth):
+    def _predict_optimal_starting_depth(self, shallow_search_stats, time_budget, starting_depth, game_stage=None):
         """
         Predict the optimal starting depth for iterative deepening based on shallow search results.
         
@@ -1905,6 +1911,7 @@ class MinimaxEngine(Engine):
             shallow_search_stats: Dictionary with 'nodes', 'moves', and 'num_pieces' from shallow search
             time_budget: Available time budget in seconds
             starting_depth: Min starting depth from configuration
+            game_stage: Game stage (0=OPENING, 1=MIDDLEGAME, 2=ENDGAME) for logging
         Returns:
             Optimal starting depth
         """
@@ -1917,7 +1924,7 @@ class MinimaxEngine(Engine):
         num_pieces = shallow_search_stats['num_pieces']
         
         # Get predicted times for different depths
-        predicted_times = self.predict_time(nodes, moves, num_pieces)
+        predicted_times = self.predict_time(nodes, moves, num_pieces, game_stage)
         
         # Find the highest depth we can complete within the time budget
         # Use a safety factor to ensure we don't exceed the budget
@@ -1932,8 +1939,11 @@ class MinimaxEngine(Engine):
         #        optimal_depth = depth
         #        break
         
+        # Convert game_stage to string for logging
+        game_stage_str = "OPENING" if game_stage == 0 else ("MIDDLEGAME" if game_stage == 1 else ("ENDGAME" if game_stage == 2 else "UNKNOWN"))
+        
         if not self.quiet:
-            self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}, pieces={num_pieces}")
+            self.logger.log_info(f"Predictive time management: nodes={nodes}, moves={moves}, pieces={num_pieces}, game_stage={game_stage_str}")
             self.logger.log_info(f"Predicted times: depth 4={predicted_times[4]:.2f}s, depth 6={predicted_times[6]:.2f}s, depth 8={predicted_times[8]:.2f}s, depth 10={predicted_times[10]:.2f}s")
             self.logger.log_info(f"Time budget: {time_budget:.2f}s, available: {available_time:.2f}s, optimal depth: {optimal_depth}")
         

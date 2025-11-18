@@ -184,6 +184,10 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         Uses starting_piece_count for consistent game stage determination.
         """
+        # If there are no queens on the board, treat as endgame
+        if not board.queens:
+            return ENDGAME
+        
         # Check for endgame first
         if self.starting_piece_count is not None:
             if self.starting_piece_count <= 16:

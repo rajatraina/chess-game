@@ -39,8 +39,8 @@
     "time_budget_safety_margin": 0.1,
     "piece_values": {
         "pawn": 100,
-        "knight": 320,
-        "bishop": 320,
+        "knight": 330,
+        "bishop": 330,
         "rook": 500,
         "queen": 990
     },
