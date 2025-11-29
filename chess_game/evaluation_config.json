@@ -40,15 +40,15 @@
     "piece_values": {
         "pawn": 100,
         "knight": 330,
-        "bishop": 330,
+        "bishop": 335,
         "rook": 500,
         "queen": 990
     },
     "total_piece_values": 8180,
     "simplification_material_diff_threshold": 700,
     "simplification_material_diff_multiplier": 0.00001,
-    "time_management_moves_remaining": 25,
-    "time_management_moves_remaining_endgame": 10,
+    "time_management_moves_remaining": 35,
+    "time_management_moves_remaining_endgame": 20,
     "time_management_increment_used": 0.9,
     "checkmate_bonus": 100000,
     "draw_value": 0,

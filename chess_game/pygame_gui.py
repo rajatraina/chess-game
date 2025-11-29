@@ -14,7 +14,7 @@ import time
 ASSET_PATH = os.path.join(os.path.dirname(__file__), '..', 'assets', 'pieces')
 
 class PygameChessGUI:
-    def __init__(self, time_budget=None):
+    def __init__(self, time_budget=None, nnue_model_path=None, nnue_config_path=None, disable_opening_book=False):
         pygame.init()
         self.square_size = 60  # Use native image size
         self.width = self.square_size * 8
@@ -29,7 +29,23 @@ class PygameChessGUI:
         
         # Create logging manager for GUI
         logger = ChessLoggingManager(print, quiet=False)
-        self.engine = MinimaxEngine(evaluator_type="handcrafted")  # Use config file depth
+        
+        # Determine evaluator type and config based on NNUE model path
+        if nnue_model_path:
+            evaluator_type = "neural"
+            evaluator_config = {"model_path": nnue_model_path}
+            if nnue_config_path:
+                evaluator_config["config_path"] = nnue_config_path
+        else:
+            evaluator_type = "handcrafted"
+            evaluator_config = {"config_file": "chess_game/evaluation_config.json"}
+        
+        # Disable opening book if requested
+        if disable_opening_book:
+            # Override opening book config via config_overrides
+            evaluator_config["config_overrides"] = {"opening_book": {"enabled": False}}
+        
+        self.engine = MinimaxEngine(evaluator_type=evaluator_type, evaluator_config=evaluator_config)
         # Override the engine's logger to use our GUI logger
         self.engine.logger = logger
         

@@ -152,12 +152,15 @@ class HandcraftedEvaluator(BaseEvaluator):
         # Store the starting position's side to move for simplification logic
         self.starting_side_to_move = None
         
-        # Evaluation caches: keyed by signatures, cleared at the start of each get_move call
+        # Evaluation caches: keyed by signatures, cleared when game stage changes or when too large
         self.material_cache: Dict[int, float] = {}
         self.positional_cache: Dict[int, float] = {}
         self.mobility_cache: Dict[int, float] = {}
         self.pawn_structure_cache: Dict[int, float] = {}
         self.king_safety_cache: Dict[int, float] = {}
+        
+        # Track the game stage for which the caches are populated
+        self.cache_game_stage: Optional[int] = None
         
     
     def _set_starting_position(self, board: chess.Board):
@@ -170,13 +173,46 @@ class HandcraftedEvaluator(BaseEvaluator):
         self.starting_piece_count = chess.popcount(board.occupied)
         self.starting_side_to_move = board.turn
     
-    def clear_eval_cache(self):
-        """Clear all evaluation caches. Called at the start of each get_move."""
-        self.material_cache.clear()
-        self.positional_cache.clear()
-        self.mobility_cache.clear()
-        self.pawn_structure_cache.clear()
-        self.king_safety_cache.clear()
+    def clear_eval_cache(self, game_stage: Optional[int] = None):
+        """
+        Clear evaluation caches based on game stage and cache size.
+        
+        Args:
+            game_stage: Current game stage (OPENING, MIDDLEGAME, or ENDGAME).
+                      If None, caches will be cleared unconditionally.
+        """
+        # If game stage is provided, check if it changed
+        if game_stage is not None:
+            if self.cache_game_stage != game_stage:
+                # Game stage changed - clear all caches
+                self.material_cache.clear()
+                self.positional_cache.clear()
+                self.mobility_cache.clear()
+                self.pawn_structure_cache.clear()
+                self.king_safety_cache.clear()
+                self.cache_game_stage = game_stage
+            else:
+                # Same game stage - clear only caches that are too large (> 1 million entries)
+                max_cache_size = 1_000_000
+                if len(self.material_cache) > max_cache_size:
+                    self.material_cache.clear()
+                if len(self.positional_cache) > max_cache_size:
+                    self.positional_cache.clear()
+                if len(self.mobility_cache) > max_cache_size:
+                    self.mobility_cache.clear()
+                if len(self.pawn_structure_cache) > max_cache_size:
+                    self.pawn_structure_cache.clear()
+                if len(self.king_safety_cache) > max_cache_size:
+                    self.king_safety_cache.clear()
+                # Keep cache_game_stage the same since we're still in the same stage
+        else:
+            # No game stage provided - clear unconditionally (backward compatibility)
+            self.material_cache.clear()
+            self.positional_cache.clear()
+            self.mobility_cache.clear()
+            self.pawn_structure_cache.clear()
+            self.king_safety_cache.clear()
+            self.cache_game_stage = None
     
     def _determine_game_stage(self, board: chess.Board) -> int:
         """
@@ -396,14 +432,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         
         # King table - encourage castling and safety
         self.king_table = [
-            5, 10, 30, -5, 0, -5, 30, 5,              # 1st rank - encourage castling squares
+            5, 15, 20, -5, 0, -5, 20, 5,              # 1st rank - encourage castling squares
             5, 0, -5, -10, -10, -5, 0, 5,             # 2nd rank - encourage castling squares
-            -30, -35, -40, -45, -45, -40, -35, -30,  # 3rd rank - strongly discourage
-            -25, -30, -35, -40, -40, -35, -30, -25,  # 4th rank - strongly discourage
-            -20, -25, -30, -35, -35, -30, -25, -20,  # 5th rank - strongly discourage
-            -15, -20, -25, -30, -30, -25, -20, -15,  # 6th rank - discourage
-            -10, -15, -20, -25, -25, -20, -15, -10,  # 7th rank - discourage
-            -5, -10, -15, -20, -20, -15, -10, -5     # 8th rank - discourage
+            -5, -5, -5, -5, -5, -5, -5, -5,  # 3rd rank - strongly discourage
+            -10, -10, -10, -10, -10, -10, -10, -10,  # 4th rank - strongly discourage
+            -10, -10, -10, -10, -10, -10, -10, -10,  # 5th rank - strongly discourage
+            -10, -10, -10, -10, -10, -10, -10, -10,  # 6th rank - discourage
+            -10, -10, -10, -10, -10, -10, -10, -10,  # 7th rank - discourage
+            -10, -10, -10, -10, -10, -10, -10, -10,     # 8th rank - discourage
         ]
         
         # Combine all tables
@@ -441,7 +477,7 @@ class HandcraftedEvaluator(BaseEvaluator):
             5, 10, 20, 20, 20, 20, 10, 5,    # 4th rank - excellent
             5, 10, 20, 20, 20, 20, 10, 5,    # 5th rank - excellent
             0, 5, 15, 15, 15, 15, 5, 0,      # 6th rank - very good
-            -5, 0, 5, 10, 10, 5, 0, -5,     # 7th rank - good
+            -5, 0, 15, 15, 15, 15, 0, -5,     # 7th rank - good
             -10, 0, 0, 5, 5, 0, 0, -10     # 8th rank - moderate
         ]
         
@@ -651,7 +687,15 @@ class HandcraftedEvaluator(BaseEvaluator):
             chess.KING: (bitboards.white_kings, bitboards.black_kings),
         }
         
-        for piece_type in tables:
+        # Calculate piece square tables based on game stage for efficiency
+        # Endgame: only pawn, knight, king
+        # Otherwise: pawn, knight, king, queen
+        if game_stage == ENDGAME:
+            piece_types = [chess.PAWN, chess.KNIGHT, chess.KING]
+        else:
+            piece_types = [chess.PAWN, chess.KNIGHT, chess.KING, chess.QUEEN]
+        
+        for piece_type in piece_types:
             # Use precomputed bitboards
             white_squares, black_squares = piece_bitboard_map[piece_type]
             
@@ -1292,6 +1336,15 @@ class EvaluationManager:
     and allows easy switching between them.
     """
     
+    @staticmethod
+    def _deep_update(base_dict: dict, update_dict: dict):
+        """Recursively update nested dictionaries"""
+        for key, value in update_dict.items():
+            if key in base_dict and isinstance(base_dict[key], dict) and isinstance(value, dict):
+                EvaluationManager._deep_update(base_dict[key], value)
+            else:
+                base_dict[key] = value
+    
     def __init__(self, evaluator_type: str = "handcrafted", **kwargs):
         """
         Initialize evaluation manager.
@@ -1305,14 +1358,25 @@ class EvaluationManager:
     def _create_evaluator(self, evaluator_type: str, **kwargs) -> BaseEvaluator:
         """Create the specified evaluator"""
         if evaluator_type.lower() == "handcrafted":
-            return HandcraftedEvaluator(**kwargs)
+            evaluator = HandcraftedEvaluator(**kwargs)
+            # Apply config overrides if provided (deep merge for nested dicts)
+            if "config_overrides" in kwargs:
+                self._deep_update(evaluator.config, kwargs["config_overrides"])
+            return evaluator
         elif evaluator_type.lower() == "neural":
             # Import NeuralNetworkEvaluator only when needed to avoid circular imports
             try:
                 from .neural_network_evaluator import NeuralNetworkEvaluator
             except ImportError:
                 from neural_network_evaluator import NeuralNetworkEvaluator
-            return NeuralNetworkEvaluator(**kwargs)
+            # Extract model_path and config_path from kwargs
+            model_path = kwargs.get('model_path')
+            config_path = kwargs.get('config_path')
+            evaluator = NeuralNetworkEvaluator(model_path=model_path, config_path=config_path)
+            # Apply config overrides if provided (deep merge for nested dicts)
+            if "config_overrides" in kwargs:
+                self._deep_update(evaluator.config, kwargs["config_overrides"])
+            return evaluator
         else:
             print(f"⚠️  Unknown evaluator type: {evaluator_type}, using handcrafted")
             return HandcraftedEvaluator(**kwargs)
@@ -1390,7 +1454,10 @@ def create_evaluator(evaluator_type: str = "handcrafted", **kwargs) -> BaseEvalu
             from .neural_network_evaluator import NeuralNetworkEvaluator
         except ImportError:
             from neural_network_evaluator import NeuralNetworkEvaluator
-        return NeuralNetworkEvaluator(**kwargs)
+        # Extract model_path and config_path from kwargs
+        model_path = kwargs.get('model_path')
+        config_path = kwargs.get('config_path')
+        return NeuralNetworkEvaluator(model_path=model_path, config_path=config_path)
     else:
         raise ValueError(f"Unknown evaluator type: {evaluator_type}")
 

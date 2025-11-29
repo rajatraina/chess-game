@@ -43,6 +43,9 @@ if __name__ == "__main__":
     parser.add_argument("--speed", action="store_true", help="Run speed benchmarking with iterative deepening on single position")
     parser.add_argument("--time-budget", type=float, help="Set time budget in seconds for each move (enables iterative deepening)")
     parser.add_argument("--runtests", action="store_true", help="Run must-find-moves tests")
+    parser.add_argument("--nnue-model", type=str, help="Path to NNUE model checkpoint (e.g., checkpoints_nnue/best_model.pth)")
+    parser.add_argument("--nnue-config", type=str, help="Path to NNUE config file (e.g., trainer/config_nnue.yaml)")
+    parser.add_argument("--no-opening-book", action="store_true", help="Disable opening book")
     args = parser.parse_args()
     
     if args.runtests:
@@ -83,9 +86,25 @@ if __name__ == "__main__":
             print("🔄 Iterative deepening will be enabled!")
             print("")
         
+        # Display NNUE model information if set
+        nnue_model_path = None
+        nnue_config_path = None
+        if args.nnue_model:
+            nnue_model_path = args.nnue_model
+            print(f"🧠 NNUE Model: {nnue_model_path}")
+            if args.nnue_config:
+                nnue_config_path = args.nnue_config
+                print(f"📋 NNUE Config: {nnue_config_path}")
+            print("")
+        
+        # Display opening book status
+        if args.no_opening_book:
+            print("🚫 Opening book disabled")
+            print("")
+        
         print("")
         print("🚀 Starting chess application...")
         print("=" * 40)
         
-        app = PygameChessGUI(time_budget=args.time_budget)
+        app = PygameChessGUI(time_budget=args.time_budget, nnue_model_path=nnue_model_path, nnue_config_path=nnue_config_path, disable_opening_book=args.no_opening_book)
         app.run() 

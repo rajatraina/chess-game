@@ -542,10 +542,6 @@ class MinimaxEngine(Engine):
         # Clear killer moves for new search to avoid stale data
         self._clear_killer_moves()
         
-        # Clear all evaluation caches for new search
-        if hasattr(self.evaluation_manager.evaluator, 'clear_eval_cache'):
-            self.evaluation_manager.evaluator.clear_eval_cache()
-        
         # Set the starting position for consistent evaluation throughout search
         if hasattr(self.evaluation_manager.evaluator, '_set_starting_position'):
             self.evaluation_manager.evaluator._set_starting_position(board)
@@ -560,9 +556,16 @@ class MinimaxEngine(Engine):
             else:
                 if not self.quiet:
                     self.logger.log_warning("Could not set starting position - evaluator missing required attributes")
-                    self.logger.log_warning(f"Evaluator type: {type(self.evaluation_manager.evaluator).__name__}")
-                    self.logger.log_warning(f"Evaluator has _set_starting_position: {hasattr(self.evaluation_manager.evaluator, '_set_starting_position')}")
-                    self.logger.log_warning(f"Evaluator has starting_piece_count: {hasattr(self.evaluation_manager.evaluator, 'starting_piece_count')}")
+        
+        # Clear evaluation caches based on game stage (only clears if stage changed or cache too large)
+        if hasattr(self.evaluation_manager.evaluator, 'clear_eval_cache'):
+            # Determine game stage for cache management
+            if hasattr(self.evaluation_manager.evaluator, '_determine_game_stage'):
+                game_stage = self.evaluation_manager.evaluator._determine_game_stage(board)
+                self.evaluation_manager.evaluator.clear_eval_cache(game_stage)
+            else:
+                # Fallback: clear unconditionally if game stage determination not available
+                self.evaluation_manager.evaluator.clear_eval_cache()
         
         # Check if position is in tablebase
         if self.tablebase and self.is_tablebase_position(board):
