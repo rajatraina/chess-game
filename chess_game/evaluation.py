@@ -377,8 +377,8 @@ class HandcraftedEvaluator(BaseEvaluator):
             4, 4, 8, 15, 15, 8, 4, 4,  # 3rd rank - center control
             2, 2, 6, 12, 12, 6, 2, 2,  # 4th rank - center control
             2, 2, 4, 12, 12, 4, 2, 2,    # 5th rank - center control
-            15, 15, 15, 15, 15, 15, 15, 15,    # 6th rank - all good for advancement
-            50, 50, 50, 50, 50, 50, 50, 50,    # 7th rank - all good for advancement
+            5, 5, 5, 5, 5, 5, 5, 5,    # 6th rank - all good for advancement
+            20, 20, 20, 20, 20, 20, 20, 20,    # 7th rank - all good for advancement
             0, 0, 0, 0, 0, 0, 0, 0     # 8th rank
         ]
         
@@ -459,14 +459,14 @@ class HandcraftedEvaluator(BaseEvaluator):
         """Initialize endgame-specific piece-square tables"""
         # Endgame pawn table - strongly encourage advancement
         self.endgame_pawn_table = [
-            -20, -20, -20, -20, -20, -20, -20, -20, # 1st rank - strongly discourage
-            0, 0, 0, 0, 0, 0, 0, 0, # 2nd rank - discourage
-            10, 10, 10, 10, 10, 10, 10, 10,        # 3rd rank - neutral
-            20, 20, 20, 20, 20, 20, 20, 20,        # 4th rank - moderate value
-            40, 40, 40, 40, 40, 40, 40, 40, # 5th rank - good value
-            60, 60, 60, 60, 60, 60, 60, 60, # 6th rank - high value
-            80, 80, 80, 80, 80, 80, 80, 80, # 7th rank - very high value
-            100, 100, 100, 100, 100, 100, 100, 100,      # 8th rank - promotion
+            0, 0, 0, 0, 0, 0, 0, 0,     # 1st rank
+            0, 0, 0, 0, 0, 0, 0, 0, # 2nd rank - starting position
+            4, 4, 8, 10, 10, 8, 4, 4,  # 3rd rank - center control
+            2, 2, 6, 10, 10, 6, 2, 2,  # 4th rank - center control
+            2, 2, 4, 10, 10, 4, 2, 2,    # 5th rank - center control
+            5, 5, 5, 5, 5, 5, 5, 5,    # 6th rank - all good for advancement
+            20, 20, 20, 20, 20, 20, 20, 20,    # 7th rank - all good for advancement
+            0, 0, 0, 0, 0, 0, 0, 0     # 8th rank
         ]
         
         # Endgame king table - encourage centralization

@@ -118,13 +118,8 @@ class MinimaxEngine(Engine):
         self.quiescence_additional_depth_limit_captures = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_captures", 8)
         self.quiescence_additional_depth_limit_checks = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_checks", 8)
         self.quiescence_additional_depth_limit_promotions = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_promotions", 8)
-        self.quiescence_additional_depth_limit_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_queen_defense", 0)
-        self.quiescence_additional_depth_limit_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_value_threshold", 0)
         # Legacy flags (kept for backward compatibility, but now controlled by depth limits)
         self.quiescence_include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
-        self.quiescence_include_queen_defense = self.evaluation_manager.evaluator.config.get("quiescence_include_queen_defense", False)
-        self.quiescence_include_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_include_value_threshold", False)
-        self.quiescence_value_threshold = self.evaluation_manager.evaluator.config.get("quiescence_value_threshold", 500)
         
         # Initialize search visualizer
         self.viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
@@ -335,16 +330,12 @@ class MinimaxEngine(Engine):
             include_captures = True
             include_checks = True
             include_promotions = True
-            include_queen_defense = False
-            include_value_threshold = False
             
             moves_to_search = self._get_quiescence_moves(
                 board,
                 include_captures=include_captures,
                 include_checks=include_checks,
-                include_promotions=include_promotions,
-                include_queen_defense=include_queen_defense,
-                include_value_threshold=include_value_threshold
+                include_promotions=include_promotions
             )
             
             if not moves_to_search:
@@ -739,7 +730,7 @@ class MinimaxEngine(Engine):
                 board.push(move)
                 
                 # Search the resulting position
-                value, line, status = self._minimax(board, current_depth - 1, alpha, beta, [move_san], start_time, time_budget, game_stage)
+                value, line, status = self._minimax(board, current_depth - 1, alpha, beta, [move_san], start_time, time_budget, game_stage, current_depth - 1)
                 
                 if status == SearchStatus.PARTIAL:
                     # Undo the move to restore the original board state
@@ -981,7 +972,7 @@ class MinimaxEngine(Engine):
         
         self.logger.log_best_move(board, best_move, best_value, best_line, final_components)
 
-    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None, game_stage=None):
+    def _minimax(self, board, depth, alpha, beta, variation=None, start_time=None, time_budget=None, game_stage=None, original_depth=None):
         """
         Minimax search with alpha-beta pruning with transposition table support.
         
@@ -993,6 +984,7 @@ class MinimaxEngine(Engine):
             variation: The sequence of moves that led to this position (for debugging)
             start_time: Start time for time budget checking
             time_budget: Time budget in seconds for early exit
+            original_depth: Original search depth from root (for checkmate validation)
             
         Returns:
             Tuple of (evaluation, principal_variation, status)
@@ -1000,6 +992,9 @@ class MinimaxEngine(Engine):
             - principal_variation: The best line (empty list if status is PARTIAL)
             - status: SearchStatus.COMPLETE or SearchStatus.PARTIAL
         """
+        # Track original depth from root for checkmate validation
+        if original_depth is None:
+            original_depth = depth
 
         # Enter node for visualization
         self.visualizer.enter_node(board, None, depth, alpha, beta, False)
@@ -1066,6 +1061,25 @@ class MinimaxEngine(Engine):
             # Start quiescence depth at 0 (quiescence depth, not total depth)
             eval_score, line, status = self._quiescence(board, alpha, beta, 0, game_stage)
             
+            # Fix checkmate evaluations found in quiescence beyond main search depth
+            # At depth == 0 (leaf node), we've searched original_depth plies from root
+            # If quiescence finds a checkmate with line length > 0, it's beyond the main search
+            # and not reliable because quiescence doesn't search all opponent moves
+            checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+            if abs(abs(eval_score) - checkmate_bonus) <= 1000:
+                distance_to_mate = len(line) if line else 0
+                # At depth == 0, we've searched original_depth plies
+                # Total distance to mate from root = original_depth + distance_to_mate
+                # If distance_to_mate > 0, the checkmate was found in quiescence beyond main search
+                # We should only trust checkmate if it's within the search depth
+                # Since we're at a leaf node (depth == 0), any checkmate with distance_to_mate > 0
+                # is beyond the main search depth. Replace with regular evaluation to be safe.
+                # The parent-level validation will do the final check based on search context.
+                if distance_to_mate > 0:
+                    # Checkmate found in quiescence beyond main search - replace with regular eval
+                    eval_score = self.evaluate(board, game_stage)
+                    line = []  # Clear the line since we're not using checkmate evaluation
+            
             # Exit quiescence node for visualization
             self.visualizer.exit_node(eval_score, "QUIESCENCE", line if line else [], 0, 0)
             
@@ -1128,7 +1142,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage)
+                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage, original_depth)
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1139,13 +1153,15 @@ class MinimaxEngine(Engine):
                 board.pop()
                 
                 # Checkmate distance correction
+                # Adjust checkmate evaluation based on distance to mate
+                # Note: Unreliable checkmates from quiescence beyond search depth are already
+                # fixed at the source (in the leaf node quiescence handler)
                 checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
+                    distance_to_mate = len(line)
                     if eval > 0:  # White is winning
-                        distance_to_mate = len(line)
                         eval = checkmate_bonus - distance_to_mate
                     else:  # Black is winning
-                        distance_to_mate = len(line)
                         eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Check if this move leads to a 3-fold repetition
@@ -1222,7 +1238,7 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage)
+                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage, original_depth)
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1233,13 +1249,15 @@ class MinimaxEngine(Engine):
                 board.pop()
                 
                 # Checkmate distance correction
+                # Adjust checkmate evaluation based on distance to mate
+                # Note: Unreliable checkmates from quiescence beyond search depth are already
+                # fixed at the source (in the leaf node quiescence handler)
                 checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
+                    distance_to_mate = len(line)
                     if eval > 0:  # White is winning
-                        distance_to_mate = len(line)
                         eval = checkmate_bonus - distance_to_mate
                     else:  # Black is winning
-                        distance_to_mate = len(line)
                         eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Check if this move leads to a 3-fold repetition
@@ -1379,9 +1397,7 @@ class MinimaxEngine(Engine):
         max_quiescence_depth = max(
             self.quiescence_additional_depth_limit_captures,
             self.quiescence_additional_depth_limit_checks,
-            self.quiescence_additional_depth_limit_promotions,
-            self.quiescence_additional_depth_limit_queen_defense,
-            self.quiescence_additional_depth_limit_value_threshold
+            self.quiescence_additional_depth_limit_promotions
         )
         if depth > max_quiescence_depth:
             return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
@@ -1457,16 +1473,12 @@ class MinimaxEngine(Engine):
             include_captures = depth <= self.quiescence_additional_depth_limit_captures
             include_checks = depth <= self.quiescence_additional_depth_limit_checks
             include_promotions = depth <= self.quiescence_additional_depth_limit_promotions
-            include_queen_defense = depth <= self.quiescence_additional_depth_limit_queen_defense
-            include_value_threshold = depth <= self.quiescence_additional_depth_limit_value_threshold
             
             moves_to_search = self._get_quiescence_moves(
                 board,
                 include_captures=include_captures,
                 include_checks=include_checks,
-                include_promotions=include_promotions,
-                include_queen_defense=include_queen_defense,
-                include_value_threshold=include_value_threshold
+                include_promotions=include_promotions
             )
             
             if not moves_to_search:
@@ -1838,71 +1850,46 @@ class MinimaxEngine(Engine):
         self.killer_moves_used = 0
 
     @staticmethod
-    def predict_time(nodes: int, moves: int, num_pieces: int | None = None, game_stage: int | None = None) -> dict[int, float]:
+    def predict_time(nodes: int, moves: int, num_pieces: int | None = None) -> dict[int, float]:
         """
-        Return predicted full-search time (seconds) at depths 4, 6, 8, 10.
-        Per-depth linear models in (nodes, moves, piece-bucket) with 4x penalty
-        on underestimates, plus multiplicative depth ratios:
-          t6 >= r46 * t4, t8 >= r68 * t6, t10 >= r8_10 * t8.
-        
-        Args:
-            nodes: Number of nodes searched in shallow search
-            moves: Number of moves evaluated in shallow search
-            num_pieces: Number of pieces on the board
-            game_stage: Game stage (0=OPENING, 1=MIDDLEGAME, 2=ENDGAME) for logging
+        Predict full-search time (seconds) at depths 4, 6, 8, 10 from shallow features.
+        Trained only on the current LOG file.
+        Conservative by construction:
+        - log-linear quantile models (tau=0.8 ≈ 4x underprediction penalty)
+        - multiplicative lower bounds between depths.
         """
-
         p = 32 if num_pieces is None else int(num_pieces)
-        if p <= 16:
-            bucket = "end"
-        elif p <= 26:
-            bucket = "mid"
-        else:
-            bucket = "open"
+        bucket = "open" if p > 26 else ("mid" if p > 16 else "end")
 
-        def lin(nodes: int, moves: int, bucket: str,
-                a: float, b: float, c_open: float, c_mid: float, c_end: float) -> float:
-            c = c_open if bucket == "open" else (c_mid if bucket == "mid" else c_end)
-            t = a * nodes + b * moves + c
-            return max(0.05, float(t))
+        ln = math.log(max(1.0, float(nodes)))
+        lm = math.log(max(1.0, float(moves)))
+        b_mid = 1.0 if bucket == "mid" else 0.0
+        b_open = 1.0 if bucket == "open" else 0.0
 
-        # Depth-4 linear + scale
-        a4, b4 = 0.0005335, -0.00820
-        c4_open, c4_mid, c4_end = 0.221, -0.163, -0.196
-        s4 = 1.44
-        t4 = lin(nodes, moves, bucket, a4, b4, c4_open, c4_mid, c4_end) * s4
+        # log-linear quantile models on log(time)
+        # y = c + a*log(nodes) + b*log(moves) + u*I(mid) + v*I(open)
+        P4  = (-8.172343, 1.224153, -0.306595, 0.692938, 0.646707)
+        P6  = (-0.250748, 0.291207,  0.210767, 0.407686, 0.702576)
+        P8  = ( 2.576984, 0.138688, -0.049462, -0.057010, 0.005124)
+        P10 = ( 2.801452, 0.099843, -0.038808, 0.000000, 0.000000)
 
-        # Depth-6 independent linear + scale
-        a6, b6 = 0.000734, 0.1443
-        c6_open, c6_mid, c6_end = 9.996, 5.012, 1.842
-        s6 = 1.315
-        t6_ind = lin(nodes, moves, bucket, a6, b6, c6_open, c6_mid, c6_end) * s6
+        def t_ind(P: tuple[float, float, float, float, float]) -> float:
+            c, a, b, u, v = P
+            return math.exp(c + a * ln + b * lm + u * b_mid + v * b_open)
 
-        # Depth-8 independent linear + scale
-        a8, b8 = 0.00388, 0.1977
-        c8_open, c8_mid, c8_end = 3.864, 5.912, 5.679
-        s8 = 1.345
-        t8_ind = lin(nodes, moves, bucket, a8, b8, c8_open, c8_mid, c8_end) * s8
+        t4 = max(0.01, t_ind(P4))
+        t6_ind = t_ind(P6)
+        t8_ind = t_ind(P8)
+        t10_ind = t_ind(P10)
 
-        # Depth-10 independent linear + scale
-        a10, b10 = -0.00443, -2.354
-        c10_open, c10_mid, c10_end = 8.338, 8.338, 16.675
-        s10 = 1.0
-        t10_ind = lin(nodes, moves, bucket, a10, b10, c10_open, c10_mid, c10_end) * s10
+        # multiplicative depth ratios (80th percentile, conservative)
+        r46 = {"end": 25.091834, "mid": 20.774194, "open": 22.197252}
+        r68 = {"end": 12.985000, "mid":  6.313530, "open":  2.460569}
+        r810 = 7.764592  # depth-10 only observed in endgames; applied globally
 
-        # Multiplicative depth ratios (trained)
-        r46 = 2.78
-        r68 = 1.0
-        r8_10 = 1.0
-
-        t6_mult = r46 * t4
-        t6 = max(t6_ind, t6_mult)
-
-        t8_mult = r68 * t6
-        t8 = max(t8_ind, t8_mult)
-
-        t10_mult = r8_10 * t8
-        t10 = max(t10_ind, t10_mult)
+        t6 = max(t6_ind, r46[bucket] * t4)
+        t8 = max(t8_ind, r68[bucket] * t6)
+        t10 = max(t10_ind, r810 * t8)
 
         return {4: float(t4), 6: float(t6), 8: float(t8), 10: float(t10)}
 
@@ -2145,21 +2132,18 @@ class MinimaxEngine(Engine):
             return None 
 
     def _get_quiescence_moves(self, board, include_captures=True, include_checks=False, 
-                               include_promotions=False, include_queen_defense=False, include_value_threshold=False):
+                               include_promotions=False):
         """
         Get moves to search in quiescence, ordered by priority:
         1. Promotions (highest priority)
         2. Captures (ordered by MVV-LVA)
         3. Checks
-        4. Defensive moves (if configured)
         
         Args:
             board: Current board state
             include_captures: Whether to include captures
             include_checks: Whether to include checks
             include_promotions: Whether to include promotion moves
-            include_queen_defense: Whether to include queen defensive moves
-            include_value_threshold: Whether to include value threshold defensive moves
             
         Returns:
             List of moves to search in quiescence, ordered by priority
@@ -2178,7 +2162,7 @@ class MinimaxEngine(Engine):
         
         # Optimization: if only captures are needed (and no promotions), use the faster generate_legal_captures()
         # If promotions are possible, we need to generate all legal moves anyway, so this optimization doesn't apply
-        if include_captures and not include_checks and not include_queen_defense and not include_value_threshold and not has_promotions:
+        if include_captures and not include_checks and not has_promotions:
             captures = list(board.generate_legal_captures())
             # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
             captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
@@ -2191,7 +2175,6 @@ class MinimaxEngine(Engine):
         # Categorize moves by type
         captures = []
         checks = []
-        defensive_moves = []
         
         for move in legal_moves:
             # Skip promotions if we already collected them separately
@@ -2207,20 +2190,12 @@ class MinimaxEngine(Engine):
                 # Check if this non-capture move gives check
                 if include_checks and board.gives_check(move):
                     checks.append(move)
-                # Check if this is a defensive move (queen defense)
-                elif include_queen_defense:
-                    if self._is_defensive_move_fast(board, move, include_queen_defense=True, include_value_threshold=False):
-                        defensive_moves.append(move)
-                # Check if this is a defensive move (value threshold)
-                elif include_value_threshold:
-                    if self._is_defensive_move_fast(board, move, include_queen_defense=False, include_value_threshold=True):
-                        defensive_moves.append(move)
         
         # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
         captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
         
-        # Combine moves in priority order: promotions first, then captures, then checks, then defensive moves
-        moves_to_search = promotions + captures + checks + defensive_moves
+        # Combine moves in priority order: promotions first, then captures, then checks
+        moves_to_search = promotions + captures + checks
         
         return moves_to_search
     
@@ -2287,41 +2262,3 @@ class MinimaxEngine(Engine):
         
         return False
     
-    def _is_defensive_move_fast(self, board, move, include_queen_defense=False, include_value_threshold=False):
-        """
-        Fast defensive move check using provided configuration flags.
-        
-        Args:
-            board: Current board state
-            move: The move to check
-            include_queen_defense: Whether to check for queen defensive moves
-            include_value_threshold: Whether to check for value threshold defensive moves
-            
-        Returns:
-            True if the move is defensive, False otherwise
-        """
-        if move.from_square is None:
-            return False
-        
-        piece = board.piece_at(move.from_square)
-        if piece is None or piece.color != board.turn:
-            return False
-        
-        # Check if the piece is under attack
-        if not board.is_attacked_by(not board.turn, move.from_square):
-            return False
-        
-        # Queen defense: only consider queen defensive moves
-        if include_queen_defense and piece.piece_type == chess.QUEEN:
-            return True
-        
-        # Value threshold: consider moves for pieces above value threshold
-        if include_value_threshold:
-            piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
-            piece_symbol = piece.symbol().upper()
-            if piece_symbol in piece_values:
-                piece_value = piece_values[piece_symbol]
-                if piece_value >= self.quiescence_value_threshold:
-                    return True
-        
-        return False
