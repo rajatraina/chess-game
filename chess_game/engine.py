@@ -720,9 +720,6 @@ class MinimaxEngine(Engine):
                 # Record move being considered for visualization
                 self.visualizer.record_move_considered(move, board)
                 
-                # Get the SAN notation before making the move
-                move_san = board.san(move)
-                
                 # Store the original turn before making the move
                 original_turn = board.turn
                 
@@ -730,13 +727,22 @@ class MinimaxEngine(Engine):
                 board.push(move)
                 
                 # Search the resulting position
-                value, line, status = self._minimax(board, current_depth - 1, alpha, beta, [move_san], start_time, time_budget, game_stage, current_depth - 1)
+                value, line, status = self._minimax(
+                    board,
+                    current_depth - 1,
+                    alpha,
+                    beta,
+                    start_time=start_time,
+                    time_budget=time_budget,
+                    game_stage=game_stage,
+                    original_depth=current_depth - 1,
+                )
                 
                 if status == SearchStatus.PARTIAL:
                     # Undo the move to restore the original board state
                     board.pop()
                     # Skip this move due to timeout - log and stop searching remaining moves
-                    self.logger.log_info(f"Move {move_san} timed out during search")
+                    self.logger.log_info(f"Move {self._move_to_san(board, move)} timed out during search")
                     iteration_has_timeouts = True  # Mark that this iteration had timeouts
                     break
                 
@@ -755,8 +761,9 @@ class MinimaxEngine(Engine):
                     self.best_line = best_line
                     self.best_value = best_value
                     # Log the new best move
-                    self.logger.log_new_best_move(board.san(move), value)
-                    self.logger.log_info(f"Updated best move from depth {current_depth}: {board.san(move)} ({value:.1f})")
+                    best_move_san = self._move_to_san(board, move)
+                    self.logger.log_new_best_move(best_move_san, value)
+                    self.logger.log_info(f"Updated best move from depth {current_depth}: {best_move_san} ({value:.1f})")
                     # Track this as a move that was best
                     moves_that_were_best.append(move)
                 else:
@@ -776,8 +783,9 @@ class MinimaxEngine(Engine):
                         self.best_line = best_line
                         self.best_value = best_value
                         # Log the new best move
-                        self.logger.log_new_best_move(board.san(move), value)
-                        self.logger.log_info(f"Updated best move from depth {current_depth}: {board.san(move)} ({value:.1f})")
+                        best_move_san = self._move_to_san(board, move)
+                        self.logger.log_new_best_move(best_move_san, value)
+                        self.logger.log_info(f"Updated best move from depth {current_depth}: {best_move_san} ({value:.1f})")
                         # Track this as a move that was best
                         moves_that_were_best.append(move)
                 
@@ -815,10 +823,7 @@ class MinimaxEngine(Engine):
             # Get best move SAN for logging
             best_move_san = "N/A"
             if best_move:
-                try:
-                    best_move_san = board.san(best_move)
-                except Exception:
-                    best_move_san = best_move.uci()
+                best_move_san = self._move_to_san(board, best_move)
             
             self.logger.log_iteration_complete(current_depth, iteration_time, best_move_san, best_value)
             
@@ -840,11 +845,7 @@ class MinimaxEngine(Engine):
             if first_completed_move is not None and best_move is not None:
                 is_mate, distance_to_mate = self._is_mate_found(best_value, best_line)
                 if is_mate:
-                    best_move_san = "N/A"
-                    try:
-                        best_move_san = board.san(best_move)
-                    except Exception:
-                        best_move_san = best_move.uci()
+                    best_move_san = self._move_to_san(board, best_move)
                     if distance_to_mate == 0:
                         self.logger.log_info(f"Checkmate found: {best_move_san} - stopping iterative deepening")
                     else:
@@ -854,11 +855,7 @@ class MinimaxEngine(Engine):
             # Check if clear best capture was found (after first iteration)
             if iteration == 1 and first_completed_move is not None and best_move is not None:
                 if self._is_clear_best_capture(board, best_move, sorted_moves[0]):
-                    best_move_san = "N/A"
-                    try:
-                        best_move_san = board.san(best_move)
-                    except Exception:
-                        best_move_san = best_move.uci()
+                    best_move_san = self._move_to_san(board, best_move)
                     self.logger.log_info(f"Clear best capture detected: {best_move_san} - stopping iterative deepening")
                     break
             
@@ -873,10 +870,7 @@ class MinimaxEngine(Engine):
         # Log iterative deepening completion
         best_move_san = "N/A"
         if best_move:
-            try:
-                best_move_san = board.san(best_move)
-            except Exception:
-                best_move_san = best_move.uci()
+            best_move_san = self._move_to_san(board, best_move)
         
         self.logger.log_iterative_deepening_complete(completed_depth, total_time, best_move_san, best_value)
         
@@ -884,7 +878,9 @@ class MinimaxEngine(Engine):
         if best_move is None:
             if sorted_moves:
                 best_move = sorted_moves[0]
-                self.logger.log_warning(f"No best move found, using first move from shallow search: {board.san(best_move)}")
+                self.logger.log_warning(
+                    f"No best move found, using first move from shallow search: {self._move_to_san(board, best_move)}"
+                )
             else:
                 self.logger.log_error("No legal moves available!")
         
@@ -920,6 +916,30 @@ class MinimaxEngine(Engine):
         
         return ordered_moves
 
+    def _move_to_san(self, board, move):
+        """Convert a move to SAN for logging/visualization with a UCI fallback."""
+        try:
+            return board.san(move)
+        except Exception:
+            return move.uci()
+
+    def _line_to_san(self, board, moves):
+        """Convert a principal variation from moves to SAN outside the hot search path."""
+        if not moves:
+            return []
+
+        line_san = []
+        temp_board = board.copy()
+        for move in moves:
+            try:
+                line_san.append(temp_board.san(move))
+                temp_board.push(move)
+            except Exception:
+                line_san.append(move.uci())
+                break
+
+        return line_san
+
     def _finish_search_logging(self, board, best_move, best_value, best_line, search_time):
         """
         Finish search logging and visualization.
@@ -936,15 +956,8 @@ class MinimaxEngine(Engine):
         
         # Finish search visualization if enabled
         if self.viz_enabled:
-            pv_san = []
-            pv_board = board.copy()
-            for m in best_line:
-                try:
-                    pv_san.append(pv_board.san(m))
-                    pv_board.push(m)
-                except Exception:
-                    break
-            self.visualizer.finish_search(board.san(best_move), best_value, self.nodes_searched, search_time, pv_san)
+            pv_san = self._line_to_san(board, best_line)
+            self.visualizer.finish_search(self._move_to_san(board, best_move), best_value, self.nodes_searched, search_time, pv_san)
         else:
             self.visualizer.finish_search("", best_value, self.nodes_searched, search_time, [])
         
@@ -955,15 +968,8 @@ class MinimaxEngine(Engine):
             self.logger.log_info(f"Search tree exported to: {viz_file}")
         
         # Print the best move found with component evaluation
-        pv_board = board.copy()
-        pv_san = []
-        for m in best_line:
-            try:
-                pv_san.append(pv_board.san(m))
-                pv_board.push(m)
-            except Exception:
-                break
-        
+        pv_san = self._line_to_san(board, best_line)
+
         # Compute evaluation components for the position at the end of the principal variation
         pv_board = board.copy()
         for move in best_line:
@@ -981,7 +987,7 @@ class MinimaxEngine(Engine):
             depth: Remaining search depth
             alpha: Alpha value for pruning (best score for maximizing player)
             beta: Beta value for pruning (best score for minimizing player)
-            variation: The sequence of moves that led to this position (for debugging)
+            variation: Deprecated debug parameter kept for compatibility
             start_time: Start time for time budget checking
             time_budget: Time budget in seconds for early exit
             original_depth: Original search depth from root (for checkmate validation)
@@ -1014,10 +1020,6 @@ class MinimaxEngine(Engine):
                     self.visualizer.exit_node(None, "TIMEOUT", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
         
-        # Initialize variation if None
-        if variation is None:
-            variation = []
-                
         # Leaf node: evaluate position
         if depth == 0:
             # Check if position is in tablebase for perfect evaluation
@@ -1127,9 +1129,6 @@ class MinimaxEngine(Engine):
                 # Record move being considered for visualization
                 self.visualizer.record_move_considered(move, board)
                 
-                # Get SAN notation before making the move
-                move_san = board.san(move)
-                
                 # Check time budget before processing this move
                 if (start_time and time_budget and self.time_budget_early_exit_enabled):
                     elapsed_time = time.time() - start_time
@@ -1142,7 +1141,16 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage, original_depth)
+                eval, line, status = self._minimax(
+                    board,
+                    depth - 1,
+                    alpha,
+                    beta,
+                    start_time=start_time,
+                    time_budget=time_budget,
+                    game_stage=game_stage,
+                    original_depth=original_depth,
+                )
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1198,16 +1206,7 @@ class MinimaxEngine(Engine):
             
             # Exit node for visualization
             if self.viz_enabled:
-                best_line_san = []
-                if best_line:
-                    temp_board = board.copy()
-                    for move in best_line:
-                        try:
-                            best_line_san.append(temp_board.san(move))
-                            temp_board.push(move)
-                        except Exception:
-                            best_line_san.append(move.uci())
-                self.visualizer.exit_node(max_eval, "EXACT", best_line_san, 0, 0)
+                self.visualizer.exit_node(max_eval, "EXACT", self._line_to_san(board, best_line), 0, 0)
             else:
                 self.visualizer.exit_node(max_eval, "EXACT", [], 0, 0)
             return max_eval, best_line, SearchStatus.COMPLETE
@@ -1223,9 +1222,6 @@ class MinimaxEngine(Engine):
                 # Record move being considered for visualization
                 self.visualizer.record_move_considered(move, board)
                 
-                # Get SAN notation before making the move
-                move_san = board.san(move)
-                
                 # Check time budget before processing this move
                 if (start_time and time_budget and self.time_budget_early_exit_enabled):
                     elapsed_time = time.time() - start_time
@@ -1238,7 +1234,16 @@ class MinimaxEngine(Engine):
                 # Make move
                 board.push(move)
                 # Recursively search the resulting position
-                eval, line, status = self._minimax(board, depth - 1, alpha, beta, variation + [move_san], start_time, time_budget, game_stage, original_depth)
+                eval, line, status = self._minimax(
+                    board,
+                    depth - 1,
+                    alpha,
+                    beta,
+                    start_time=start_time,
+                    time_budget=time_budget,
+                    game_stage=game_stage,
+                    original_depth=original_depth,
+                )
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1293,16 +1298,7 @@ class MinimaxEngine(Engine):
                     
             # Exit node for visualization
             if self.viz_enabled:
-                best_line_san = []
-                if best_line:
-                    temp_board = board.copy()
-                    for move in best_line:
-                        try:
-                            best_line_san.append(temp_board.san(move))
-                            temp_board.push(move)
-                        except Exception:
-                            best_line_san.append(move.uci())
-                self.visualizer.exit_node(min_eval, "EXACT", best_line_san, 0, 0)
+                self.visualizer.exit_node(min_eval, "EXACT", self._line_to_san(board, best_line), 0, 0)
             else:
                 self.visualizer.exit_node(min_eval, "EXACT", [], 0, 0)
             return min_eval, best_line, SearchStatus.COMPLETE
@@ -1914,7 +1910,7 @@ class MinimaxEngine(Engine):
         num_pieces = shallow_search_stats['num_pieces']
         
         # Get predicted times for different depths
-        predicted_times = self.predict_time(nodes, moves, num_pieces, game_stage)
+        predicted_times = self.predict_time(nodes, moves, num_pieces)
         
         # Find the highest depth we can complete within the time budget
         # Use a safety factor to ensure we don't exceed the budget
