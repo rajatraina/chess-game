@@ -138,6 +138,11 @@ class MinimaxEngine(Engine):
         # Move counter for visualization
         self.move_counter = 0
         
+        # Cache hot-path config values used inside recursive search loops
+        self.checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+        self.draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
+        self.repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+        
         # Initialize search result attributes
         self.best_value = None
         self.best_line = []
@@ -192,17 +197,15 @@ class MinimaxEngine(Engine):
         if board.is_game_over():
             if board.is_checkmate():
                 # Checkmate evaluation
-                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                checkmate_bonus = self.checkmate_bonus
                 if board.turn:  # Black wins (White to move but checkmated)
                     return -checkmate_bonus, [], SearchStatus.COMPLETE
                 else:  # White wins (Black to move but checkmated)
                     return checkmate_bonus, [], SearchStatus.COMPLETE
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
-                draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
-                return draw_value, [], SearchStatus.COMPLETE  # Draw
+                return self.draw_value, [], SearchStatus.COMPLETE  # Draw
             elif board.is_repetition():
-                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                return repetition_eval, [], SearchStatus.COMPLETE  # 3-fold repetition
+                return self.repetition_eval, [], SearchStatus.COMPLETE  # 3-fold repetition
         
         # Leaf node: use quiescence search
         if depth == 0:
@@ -242,7 +245,7 @@ class MinimaxEngine(Engine):
             board.pop()
             
             if repetition_after_move:
-                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                repetition_eval = self.repetition_eval
                 if board.turn:  # White to move
                     if value > 20:  # We're ahead — penalize draw
                         value = -1000
@@ -1065,7 +1068,7 @@ class MinimaxEngine(Engine):
             # At depth == 0 (leaf node), we've searched original_depth plies from root
             # If quiescence finds a checkmate with line length > 0, it's beyond the main search
             # and not reliable because quiescence doesn't search all opponent moves
-            checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+            checkmate_bonus = self.checkmate_bonus
             if abs(abs(eval_score) - checkmate_bonus) <= 1000:
                 distance_to_mate = len(line) if line else 0
                 # At depth == 0, we've searched original_depth plies
@@ -1089,18 +1092,16 @@ class MinimaxEngine(Engine):
         if board.is_game_over():
             if board.is_checkmate():
                 # Checkmate evaluation
-                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                checkmate_bonus = self.checkmate_bonus
                 if board.turn:  # Black wins (White to move but checkmated)
                     eval_score = -checkmate_bonus
                 else:  # White wins (Black to move but checkmated)
                     eval_score = checkmate_bonus
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
                 # Draw conditions (except repetition)
-                eval_score = self.evaluation_manager.evaluator.config.get("draw_value", 0)
+                eval_score = self.draw_value
             elif board.is_repetition():
-                # 3-fold repetition - can be evaluated differently
-                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                eval_score = repetition_eval
+                eval_score = self.repetition_eval
             else:
                 # Other game over conditions
                 eval_score = self.evaluate(board, game_stage)
@@ -1166,7 +1167,7 @@ class MinimaxEngine(Engine):
                 board.pop()
                 
                 # Checkmate distance correction
-                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                checkmate_bonus = self.checkmate_bonus
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
                     distance_to_mate = len(line)
                     if eval > 0:  # White is winning
@@ -1176,7 +1177,7 @@ class MinimaxEngine(Engine):
                 
                 # Apply repetition penalty/bonus using the search score to judge winning/losing
                 if repetition_after_move:
-                    repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                    repetition_eval = self.repetition_eval
                     if eval > 20:  # We're ahead — penalize draw
                         eval = -1000
                     elif eval < -20:  # We're behind — prefer draw
@@ -1251,7 +1252,7 @@ class MinimaxEngine(Engine):
                 board.pop()
                 
                 # Checkmate distance correction
-                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                checkmate_bonus = self.checkmate_bonus
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
                     distance_to_mate = len(line)
                     if eval > 0:  # White is winning
@@ -1261,7 +1262,7 @@ class MinimaxEngine(Engine):
                 
                 # Apply repetition penalty/bonus using the search score to judge winning/losing
                 if repetition_after_move:
-                    repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+                    repetition_eval = self.repetition_eval
                     if eval < -20:  # We're ahead (Black) — penalize draw
                         eval = 1000
                     elif eval > 20:  # We're behind (Black) — prefer draw
@@ -1355,21 +1356,16 @@ class MinimaxEngine(Engine):
         if False and board.is_game_over():
             if board.is_checkmate():
                 # Checkmate evaluation
-                checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+                checkmate_bonus = self.checkmate_bonus
                 if board.turn:  # Black wins (White to move but checkmated)
                     return -checkmate_bonus, [], SearchStatus.COMPLETE
                 else:  # White wins (Black to move but checkmated)
                     return checkmate_bonus, [], SearchStatus.COMPLETE
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
-                # Draw conditions (except repetition)
-                draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
-                return draw_value, [], SearchStatus.COMPLETE
+                return self.draw_value, [], SearchStatus.COMPLETE
             elif board.is_repetition():
-                # 3-fold repetition - can be evaluated differently
-                repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                return repetition_eval, [], SearchStatus.COMPLETE
+                return self.repetition_eval, [], SearchStatus.COMPLETE
             else:
-                # Other game over conditions
                 return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
             
         # Limit quiescence depth to prevent infinite loops
@@ -1604,7 +1600,7 @@ class MinimaxEngine(Engine):
             - is_mate: True if mate or mate in 2 was found
             - distance_to_mate: Distance to mate (0 = checkmate, 1 = mate in 2)
         """
-        checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
+        checkmate_bonus = self.checkmate_bonus
         
         # Check if evaluation indicates a mate
         # Mate evaluations are: checkmate_bonus - distance_to_mate
