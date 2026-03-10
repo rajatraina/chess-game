@@ -233,28 +233,26 @@ class MinimaxEngine(Engine):
                 board.pop()
                 return None, [], SearchStatus.PARTIAL
             
-            # Check for repetition while the move is still made
-            repetition_after_move = board.is_repetition()
+            # Check repetition while move is still pushed; skip for irreversible moves
+            repetition_after_move = False
+            if not board.is_irreversible(board.peek()):
+                repetition_after_move = board.is_repetition()
             
             # Undo the move
             board.pop()
             
             if repetition_after_move:
                 repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                # Check current position evaluation to determine if we're winning/losing
-                current_eval = self.evaluate(board)
-                # If we're winning and this move leads to repetition, heavily penalize it
-                # If we're losing and this move leads to repetition, prefer it
                 if board.turn:  # White to move
-                    if current_eval > 20:  # White is winning significantly
-                        value = -1000  # Heavy penalty for throwing away winning position
-                    elif current_eval < -20:  # White is losing significantly
-                        value = repetition_eval  # Prefer draw over losing
+                    if value > 20:  # We're ahead — penalize draw
+                        value = -1000
+                    elif value < -20:  # We're behind — prefer draw
+                        value = repetition_eval
                 else:  # Black to move
-                    if current_eval < -20:  # Black is winning significantly
-                        value = 1000  # Heavy penalty for throwing away winning position
-                    elif current_eval > 20:  # Black is losing significantly
-                        value = repetition_eval  # Prefer draw over losing
+                    if value < -20:  # We're ahead — penalize draw
+                        value = 1000
+                    elif value > 20:  # We're behind — prefer draw
+                        value = repetition_eval
             
             # Update best move based on whose turn it is
             if board.turn:  # White to move: maximize
@@ -1157,13 +1155,17 @@ class MinimaxEngine(Engine):
                     board.pop()
                     self.visualizer.exit_node(None, "PARTIAL", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
+
+                # Check repetition while the move is still pushed (avoids an extra push/pop).
+                # Only reversible moves (non-captures, non-pawn moves) can cause repetition.
+                repetition_after_move = False
+                if not board.is_irreversible(board.peek()):
+                    repetition_after_move = board.is_repetition()
+
                 # Undo move
                 board.pop()
                 
                 # Checkmate distance correction
-                # Adjust checkmate evaluation based on distance to mate
-                # Note: Unreliable checkmates from quiescence beyond search depth are already
-                # fixed at the source (in the leaf node quiescence handler)
                 checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
                     distance_to_mate = len(line)
@@ -1172,24 +1174,13 @@ class MinimaxEngine(Engine):
                     else:  # Black is winning
                         eval = -(checkmate_bonus - distance_to_mate)
                 
-                # Check if this move leads to a 3-fold repetition
-                board.push(move)
-                repetition_after_move = board.is_repetition()
-                board.pop()
-                
-                # Apply repetition penalty/bonus based on whether this move leads to repetition
+                # Apply repetition penalty/bonus using the search score to judge winning/losing
                 if repetition_after_move:
                     repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                    # Check current position evaluation to determine if we're winning/losing
-                    current_eval = self.evaluate(board)
-                    # If we're winning and this move leads to repetition, heavily penalize it
-                    # If we're losing and this move leads to repetition, prefer it
-                    if current_eval > 20:  # White is winning significantly
-                        eval = -1000  # Heavy penalty for throwing away winning position
-                    elif current_eval < -20:  # White is losing significantly
-                        eval = repetition_eval  # Prefer draw over losing
-                
-
+                    if eval > 20:  # We're ahead — penalize draw
+                        eval = -1000
+                    elif eval < -20:  # We're behind — prefer draw
+                        eval = repetition_eval
                 
                 # Update best move if this is better
                 if eval > max_eval:
@@ -1250,13 +1241,16 @@ class MinimaxEngine(Engine):
                     board.pop()
                     self.visualizer.exit_node(None, "PARTIAL", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
+
+                # Check repetition while the move is still pushed (avoids an extra push/pop).
+                repetition_after_move = False
+                if not board.is_irreversible(board.peek()):
+                    repetition_after_move = board.is_repetition()
+
                 # Undo move
                 board.pop()
                 
                 # Checkmate distance correction
-                # Adjust checkmate evaluation based on distance to mate
-                # Note: Unreliable checkmates from quiescence beyond search depth are already
-                # fixed at the source (in the leaf node quiescence handler)
                 checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
                     distance_to_mate = len(line)
@@ -1265,22 +1259,13 @@ class MinimaxEngine(Engine):
                     else:  # Black is winning
                         eval = -(checkmate_bonus - distance_to_mate)
                 
-                # Check if this move leads to a 3-fold repetition
-                board.push(move)
-                repetition_after_move = board.is_repetition()
-                board.pop()
-                
-                # Apply repetition penalty/bonus based on whether this move leads to repetition
+                # Apply repetition penalty/bonus using the search score to judge winning/losing
                 if repetition_after_move:
                     repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
-                    # Check current position evaluation to determine if we're winning/losing
-                    current_eval = self.evaluate(board)
-                    # If we're winning and this move leads to repetition, heavily penalize it
-                    # If we're losing and this move leads to repetition, prefer it
-                    if current_eval < -20:  # Black is winning significantly
-                        eval = 1000  # Heavy penalty for throwing away winning position
-                    elif current_eval > 20:  # Black is losing significantly
-                        eval = repetition_eval  # Prefer draw over losing
+                    if eval < -20:  # We're ahead (Black) — penalize draw
+                        eval = 1000
+                    elif eval > 20:  # We're behind (Black) — prefer draw
+                        eval = repetition_eval
                 
                 # Update best move if this is better
                 if eval < min_eval:
