@@ -1276,32 +1276,38 @@ class MinimaxEngine(Engine):
                         # Convert WDL to evaluation score
                         # WDL values are from the perspective of the side to move
                         # WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
+                        # Incorporate DTZ for distance-aware scoring (prefer shorter wins, longer losses)
+                        try:
+                            dtz = self.tablebase.get_dtz(board)
+                            dtz_adj = min(abs(dtz), 500) if dtz is not None else 0
+                        except Exception:
+                            dtz_adj = 0
                         if board.turn:  # White to move
                             if wdl == 2:  # White wins
-                                return 100000, [], SearchStatus.COMPLETE
+                                return 100000 - dtz_adj, [], SearchStatus.COMPLETE
                             elif wdl == 1:  # White cursed win
-                                return 50000, [], SearchStatus.COMPLETE
+                                return 50000 - dtz_adj, [], SearchStatus.COMPLETE
                             elif wdl == 0:  # Draw
                                 return 0, [], SearchStatus.COMPLETE
                             elif wdl == -1:  # White blessed loss
-                                return -50000, [], SearchStatus.COMPLETE
+                                return -50000 + dtz_adj, [], SearchStatus.COMPLETE
                             elif wdl == -2:  # White loses
-                                return -100000, [], SearchStatus.COMPLETE
+                                return -100000 + dtz_adj, [], SearchStatus.COMPLETE
                         else:  # Black to move
                             if wdl == 2:  # Black wins (bad for White)
-                                return -100000, [], SearchStatus.COMPLETE
+                                return -(100000 - dtz_adj), [], SearchStatus.COMPLETE
                             elif wdl == 1:  # Black cursed win (bad for White)
-                                return -50000, [], SearchStatus.COMPLETE
+                                return -(50000 - dtz_adj), [], SearchStatus.COMPLETE
                             elif wdl == 0:  # Draw
                                 return 0, [], SearchStatus.COMPLETE
                             elif wdl == -1:  # Black blessed loss (good for White)
-                                return 50000, [], SearchStatus.COMPLETE
+                                return 50000 - dtz_adj, [], SearchStatus.COMPLETE
                             elif wdl == -2:  # Black loses (good for White)
-                                return 100000, [], SearchStatus.COMPLETE
+                                return 100000 - dtz_adj, [], SearchStatus.COMPLETE
                 except Exception:
                     # Fall back to quiescence if tablebase lookup fails
                     pass
-            
+
             # Enter quiescence node for visualization
             self.visualizer.enter_node(board, None, 0, alpha, beta, True)
             
@@ -1732,28 +1738,34 @@ class MinimaxEngine(Engine):
                     # Convert WDL to evaluation score
                     # WDL values are from the perspective of the side to move
                     # WDL: 2=win, 1=cursed win, 0=draw, -1=blessed loss, -2=loss
+                    # Incorporate DTZ for distance-aware scoring (prefer shorter wins, longer losses)
+                    try:
+                        dtz = self.tablebase.get_dtz(board)
+                        dtz_adj = min(abs(dtz), 500) if dtz is not None else 0
+                    except Exception:
+                        dtz_adj = 0
                     if board.turn:  # White to move
                         if wdl == 2:  # White wins
-                            return 100000, [], SearchStatus.COMPLETE
+                            return 100000 - dtz_adj, [], SearchStatus.COMPLETE
                         elif wdl == 1:  # White cursed win
-                            return 50000, [], SearchStatus.COMPLETE
+                            return 50000 - dtz_adj, [], SearchStatus.COMPLETE
                         elif wdl == 0:  # Draw
                             return 0, [], SearchStatus.COMPLETE
                         elif wdl == -1:  # White blessed loss
-                            return -50000, [], SearchStatus.COMPLETE
+                            return -50000 + dtz_adj, [], SearchStatus.COMPLETE
                         elif wdl == -2:  # White loses
-                            return -100000, [], SearchStatus.COMPLETE
+                            return -100000 + dtz_adj, [], SearchStatus.COMPLETE
                     else:  # Black to move
                         if wdl == 2:  # Black wins (bad for White)
-                            return -100000, [], SearchStatus.COMPLETE
+                            return -(100000 - dtz_adj), [], SearchStatus.COMPLETE
                         elif wdl == 1:  # Black cursed win (bad for White)
-                            return -50000, [], SearchStatus.COMPLETE
+                            return -(50000 - dtz_adj), [], SearchStatus.COMPLETE
                         elif wdl == 0:  # Draw
                             return 0, [], SearchStatus.COMPLETE
                         elif wdl == -1:  # Black blessed loss (good for White)
-                            return 50000, [], SearchStatus.COMPLETE
+                            return 50000 - dtz_adj, [], SearchStatus.COMPLETE
                         elif wdl == -2:  # Black loses (good for White)
-                            return 100000, [], SearchStatus.COMPLETE
+                            return 100000 - dtz_adj, [], SearchStatus.COMPLETE
             except Exception:
                 # Fall back to standard evaluation if tablebase lookup fails
                 pass
@@ -2383,6 +2395,8 @@ class MinimaxEngine(Engine):
             if not self.quiet:
                 self.logger.log(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
             
+            root_is_white = board.turn
+
             moves_checked = 0
             for move in board.legal_moves:
                 # Get SAN notation before pushing the move
@@ -2399,14 +2413,16 @@ class MinimaxEngine(Engine):
                     moves_checked += 1
                     
                     if move_wdl is not None:
-                        
+                        move_eval = self.evaluate(board)
+
                         move_candidates.append({
                             'move': move,
                             'san': move_san,
                             'wdl': move_wdl,
                             'dtz': move_dtz,
                             'is_pawn_move': is_pawn_move,
-                            'is_capture': is_capture
+                            'is_capture': is_capture,
+                            'eval': move_eval
                         })
                         
                         if not self.quiet:
@@ -2422,14 +2438,15 @@ class MinimaxEngine(Engine):
             # Now apply our selection logic
             if move_candidates:
                 # Sort by WDL first (lower is better for the opponent)
-                # Then by pawn moves and captures
-                # Then by DTZ (higher is better)
+                # Then by abs(DTZ) ascending (fastest conversion)
+                # Then by evaluation descending (prefer preserving material)
                 def move_priority(candidate):
                     wdl = candidate['wdl']
-                    is_pawn_or_capture = candidate['is_pawn_move'] or candidate['is_capture']
-                    dtz = candidate['dtz'] if candidate['dtz'] is not None else -999
-                    
-                    return (wdl, -is_pawn_or_capture, -dtz)
+                    dtz = candidate['dtz'] if candidate['dtz'] is not None else 999
+                    abs_dtz = abs(dtz)
+                    # eval is from White's perspective; convert to "good for us"
+                    eval_for_us = candidate['eval'] if root_is_white else -candidate['eval']
+                    return (wdl, abs_dtz, -eval_for_us)
                 
                 move_candidates.sort(key=move_priority)
                 best_candidate = move_candidates[0]
