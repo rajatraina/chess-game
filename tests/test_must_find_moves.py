@@ -125,6 +125,40 @@ class TestMustFindMoves(unittest.TestCase):
         
         print(f"✅ PASS: Engine correctly handled early exit and returned valid move: {best_move_san}")
 
+    def test_false_mate_scores_do_not_trigger_mate_detection(self):
+        """Regression test for bogus mate scores whose PV does not end in checkmate."""
+        regression_cases = [
+            (
+                "3r1k2/6Rp/2R2p2/8/3P1N2/P4N1P/3K2P1/8 w - - 1 41",
+                99999.0,
+                ["Rxf6+", "Kxg7", "Kd3"],
+            ),
+            (
+                "3r4/6kp/5R2/8/3P1N2/P4N1P/3K2P1/8 w - - 0 42",
+                100000.0,
+                ["Ke3"],
+            ),
+        ]
+
+        for fen, score, san_line in regression_cases:
+            with self.subTest(fen=fen, san_line=san_line):
+                board = chess.Board(fen)
+                pv_board = board.copy()
+                pv_moves = []
+                for san in san_line:
+                    move = pv_board.parse_san(san)
+                    pv_moves.append(move)
+                    pv_board.push(move)
+
+                self.assertFalse(
+                    pv_board.is_checkmate(),
+                    f"Regression PV unexpectedly ends in mate: {san_line}",
+                )
+
+                is_mate, distance = self.engine._is_mate_found(board, score, pv_moves)
+                self.assertFalse(is_mate, f"False mate detected for PV {san_line}")
+                self.assertIsNone(distance)
+
 def run_tests():
     """Run the tests and return results"""
     print("Running expected moves tests...")

@@ -384,7 +384,16 @@ class NoOpVisualizer:
     def exit_node(self, evaluation: float, node_type: str, principal_variation: List[str], 
                   nodes_searched: int, time_taken: float, tt_hit: bool = False, 
                   tt_depth: int = 0, evaluation_components: Optional[Dict[str, float]] = None,
-                  move_order: Optional[List[str]] = None, beta_cutoff: bool = False):
+                  move_order: Optional[List[str]] = None, best_move: Optional[str] = None,
+                  beta_cutoff: bool = False, cutoff_move: Optional[str] = None):
+        """No-op - does nothing."""
+        pass
+    
+    def record_tt_hit(self, depth: int):
+        """No-op - does nothing."""
+        pass
+    
+    def record_move_order(self, moves: List[str]):
         """No-op - does nothing."""
         pass
     

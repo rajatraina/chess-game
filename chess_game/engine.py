@@ -6,6 +6,7 @@ import os
 import zlib
 import math
 from enum import Enum
+from dataclasses import dataclass
 try:
     from .evaluation import EvaluationManager, create_evaluator
     from .logging_manager import get_logger
@@ -25,6 +26,23 @@ except ImportError:
 class SearchStatus(Enum):
     COMPLETE = "complete"      # Search completed successfully
     PARTIAL = "partial"        # Search timed out or was interrupted
+
+
+TT_BOUND_EXACT = 0
+TT_BOUND_LOWER = 1
+TT_BOUND_UPPER = 2
+
+
+@dataclass(slots=True)
+class TTEntry:
+    """Compact main-search transposition table entry."""
+    key_hash: int
+    key: tuple
+    depth: int
+    score: float
+    bound: int
+    best_move: chess.Move | None
+    age: int
 
 
 
@@ -83,10 +101,20 @@ class MinimaxEngine(Engine):
         # Search age for tracking
         self.search_age = 0
         
+        # Main-search transposition table
+        self._init_transposition_table()
+        
         # Killer moves storage - track cutoff counts per move per depth
         self.killer_moves = {}  # Dictionary: depth -> {move: cutoff_count}
         self.killer_moves_stored = 0
         self.killer_moves_used = 0
+        
+        # Quiet-move history heuristic
+        self.history_heuristic_enabled = self.evaluation_manager.evaluator.config.get("history_heuristic_enabled", True)
+        self.history_bonus_scale = max(1, int(self.evaluation_manager.evaluator.config.get("history_bonus_scale", 1)))
+        self.history_penalty_scale = max(0, int(self.evaluation_manager.evaluator.config.get("history_penalty_scale", 1)))
+        self.history_max_value = max(1, int(self.evaluation_manager.evaluator.config.get("history_max_value", 16384)))
+        self._init_history_heuristic()
         
         
         # Load time management parameters
@@ -142,10 +170,222 @@ class MinimaxEngine(Engine):
         self.checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
         self.draw_value = self.evaluation_manager.evaluator.config.get("draw_value", 0)
         self.repetition_eval = self.evaluation_manager.evaluator.config.get("repetition_evaluation", 0)
+        self.pvs_enabled = self.evaluation_manager.evaluator.config.get("pvs_enabled", True)
+        self.pvs_min_depth = max(2, int(self.evaluation_manager.evaluator.config.get("pvs_min_depth", 4)))
+        self.pvs_window = float(self.evaluation_manager.evaluator.config.get("pvs_window", 0.01))
         
         # Initialize search result attributes
         self.best_value = None
         self.best_line = []
+    
+    def _init_transposition_table(self):
+        """Initialize a fixed-size bucketed main-search transposition table."""
+        config = self.evaluation_manager.evaluator.config
+        tt_requested = bool(config.get("transposition_table_enabled", False))
+        self.tt_enabled = tt_requested and hasattr(chess.Board, "_transposition_key")
+        self.tt_bucket_size = max(1, int(config.get("transposition_table_bucket_size", 2)))
+        self.tt_store_min_depth = max(1, int(config.get("transposition_table_store_min_depth", 2)))
+        
+        if tt_requested and not self.tt_enabled and not self.quiet:
+            self.logger.log_warning("Transposition table disabled: python-chess _transposition_key() is unavailable")
+        
+        if not self.tt_enabled:
+            self.tt_bucket_count = 0
+            self.tt_index_mask = 0
+            self.tt_capacity = 0
+            self.tt_buckets = []
+            self._reset_tt_stats()
+            return
+        
+        requested_entries = max(self.tt_bucket_size, int(config.get("transposition_table_entries", 65536)))
+        target_bucket_count = max(1, (requested_entries + self.tt_bucket_size - 1) // self.tt_bucket_size)
+        bucket_count = 1
+        while bucket_count < target_bucket_count:
+            bucket_count <<= 1
+        
+        self.tt_bucket_count = bucket_count
+        self.tt_index_mask = bucket_count - 1
+        self.tt_capacity = bucket_count * self.tt_bucket_size
+        self.tt_buckets = [[None] * self.tt_bucket_size for _ in range(self.tt_bucket_count)]
+        self._reset_tt_stats()
+    
+    def _reset_tt_stats(self):
+        """Reset per-search transposition table statistics."""
+        self.tt_probes = 0
+        self.tt_hits = 0
+        self.tt_cutoffs = 0
+        self.tt_stores = 0
+        self.tt_overwrites = 0
+    
+    def _init_history_heuristic(self):
+        """Initialize the quiet-move history heuristic table."""
+        self.history_table = [[[0] * 64 for _ in range(64)] for _ in range(2)]
+    
+    def _age_history_heuristic(self):
+        """Decay history scores between searches to keep recent information relevant."""
+        if not self.history_heuristic_enabled:
+            return
+        
+        for color_table in self.history_table:
+            for from_square in range(64):
+                row = color_table[from_square]
+                for to_square in range(64):
+                    row[to_square] //= 2
+    
+    def _get_history_score(self, board, move):
+        """Get quiet-move history score for ordering."""
+        if not self.history_heuristic_enabled:
+            return 0
+        return self.history_table[int(board.turn)][move.from_square][move.to_square]
+    
+    def _update_history_heuristic(self, color, best_move, depth, tried_quiet_moves):
+        """Reward the quiet cutoff move and lightly penalize earlier quiet moves."""
+        if not self.history_heuristic_enabled or best_move is None:
+            return
+        
+        color_index = int(color)
+        bonus = min(self.history_max_value, depth * depth * self.history_bonus_scale)
+        history_row = self.history_table[color_index][best_move.from_square]
+        history_row[best_move.to_square] = min(self.history_max_value, history_row[best_move.to_square] + bonus)
+        
+        if self.history_penalty_scale <= 0:
+            return
+        
+        penalty = max(1, bonus // (2 * self.history_penalty_scale))
+        for move in tried_quiet_moves:
+            if move == best_move:
+                continue
+            row = self.history_table[color_index][move.from_square]
+            row[move.to_square] = max(-self.history_max_value, row[move.to_square] - penalty)
+    
+    def _get_tt_stats(self):
+        """Return current search transposition table statistics for logging."""
+        if not self.tt_enabled:
+            return {}
+        hit_rate = (100.0 * self.tt_hits / self.tt_probes) if self.tt_probes else 0.0
+        cutoff_rate = (100.0 * self.tt_cutoffs / self.tt_hits) if self.tt_hits else 0.0
+        return {
+            "hits": self.tt_hits,
+            "total_probes": self.tt_probes,
+            "hit_rate": hit_rate,
+            "cutoffs": self.tt_cutoffs,
+            "cutoff_rate": cutoff_rate,
+            "stores": self.tt_stores,
+            "overwrites": self.tt_overwrites,
+        }
+    
+    def _probe_transposition_table(self, key, key_hash):
+        """Probe the transposition table for an exact position match."""
+        if not self.tt_enabled:
+            return None
+        
+        self.tt_probes += 1
+        bucket = self.tt_buckets[key_hash & self.tt_index_mask]
+        for entry in bucket:
+            if entry is None or entry.key_hash != key_hash:
+                continue
+            if entry.key == key:
+                self.tt_hits += 1
+                return entry
+        return None
+
+    def _lookup_transposition_table(self, key, key_hash):
+        """Look up a transposition-table entry without affecting search statistics."""
+        if not self.tt_enabled:
+            return None
+
+        bucket = self.tt_buckets[key_hash & self.tt_index_mask]
+        for entry in bucket:
+            if entry is None or entry.key_hash != key_hash:
+                continue
+            if entry.key == key:
+                return entry
+        return None
+
+    def _reconstruct_exact_tt_line(self, board, depth):
+        """Reconstruct a principal variation by following exact TT entries."""
+        if not self.tt_enabled or depth <= 0:
+            return []
+
+        temp_board = board.copy(stack=False)
+        remaining_depth = depth
+        line = []
+        seen_keys = set()
+
+        while remaining_depth > 0 and not temp_board.is_game_over():
+            key = temp_board._transposition_key()
+            if key in seen_keys:
+                break
+            seen_keys.add(key)
+
+            entry = self._lookup_transposition_table(key, hash(key))
+            if (
+                entry is None
+                or entry.bound != TT_BOUND_EXACT
+                or entry.depth < remaining_depth
+                or entry.best_move is None
+                or not temp_board.is_legal(entry.best_move)
+            ):
+                break
+
+            line.append(entry.best_move)
+            temp_board.push(entry.best_move)
+            remaining_depth -= 1
+
+        return line
+    
+    def _select_tt_replacement_index(self, bucket):
+        """Choose which bucket entry to replace, preferring stale and shallow entries."""
+        replacement_index = 0
+        replacement_priority = None
+        
+        for index, entry in enumerate(bucket):
+            if entry is None:
+                return index
+            
+            # Lower-priority entries are replaced first:
+            # stale entries, then shallower ones, then non-exact bounds.
+            priority = (
+                0 if entry.age != self.search_age else 1,
+                entry.depth,
+                0 if entry.bound != TT_BOUND_EXACT else 1,
+            )
+            if replacement_priority is None or priority < replacement_priority:
+                replacement_priority = priority
+                replacement_index = index
+        
+        return replacement_index
+    
+    def _store_transposition_table(self, key, key_hash, depth, score, bound, best_move):
+        """Store a main-search result in the transposition table."""
+        if not self.tt_enabled or depth < self.tt_store_min_depth:
+            return
+        
+        bucket = self.tt_buckets[key_hash & self.tt_index_mask]
+        
+        for index, entry in enumerate(bucket):
+            if entry is None:
+                bucket[index] = TTEntry(key_hash, key, depth, score, bound, best_move, self.search_age)
+                self.tt_stores += 1
+                return
+            
+            if entry.key_hash != key_hash or entry.key != key:
+                continue
+            
+            should_replace = (
+                depth > entry.depth or
+                (depth == entry.depth and bound == TT_BOUND_EXACT and entry.bound != TT_BOUND_EXACT) or
+                entry.age != self.search_age
+            )
+            if should_replace:
+                bucket[index] = TTEntry(key_hash, key, depth, score, bound, best_move, self.search_age)
+                self.tt_stores += 1
+            return
+        
+        replacement_index = self._select_tt_replacement_index(bucket)
+        bucket[replacement_index] = TTEntry(key_hash, key, depth, score, bound, best_move, self.search_age)
+        self.tt_stores += 1
+        self.tt_overwrites += 1
     
     def calculate_time_budget(self, time_remaining, increment, board=None):
         """
@@ -530,6 +770,8 @@ class MinimaxEngine(Engine):
         """
         # Increment search age
         self.search_age += 1
+        self._reset_tt_stats()
+        self._age_history_heuristic()
         
         # Clear killer moves for new search to avoid stale data
         self._clear_killer_moves()
@@ -844,7 +1086,7 @@ class MinimaxEngine(Engine):
             
             # Check if mate or mate in 2 was found (any iteration)
             if first_completed_move is not None and best_move is not None:
-                is_mate, distance_to_mate = self._is_mate_found(best_value, best_line)
+                is_mate, distance_to_mate = self._is_mate_found(board, best_value, best_line)
                 if is_mate:
                     best_move_san = self._move_to_san(board, best_move)
                     if distance_to_mate == 0:
@@ -866,7 +1108,7 @@ class MinimaxEngine(Engine):
         
         # Log final search completion
         total_time = time.time() - start_time
-        self.logger.log_search_completion(total_time, self.nodes_searched, {})
+        self.logger.log_search_completion(total_time, self.nodes_searched, self._get_tt_stats())
         
         # Log iterative deepening completion
         best_move_san = "N/A"
@@ -1002,6 +1244,9 @@ class MinimaxEngine(Engine):
         # Track original depth from root for checkmate validation
         if original_depth is None:
             original_depth = depth
+        
+        alpha_orig = alpha
+        beta_orig = beta
 
         # Enter node for visualization
         self.visualizer.enter_node(board, None, depth, alpha, beta, False)
@@ -1064,24 +1309,13 @@ class MinimaxEngine(Engine):
             # Start quiescence depth at 0 (quiescence depth, not total depth)
             eval_score, line, status = self._quiescence(board, alpha, beta, 0, game_stage)
             
-            # Fix checkmate evaluations found in quiescence beyond main search depth
-            # At depth == 0 (leaf node), we've searched original_depth plies from root
-            # If quiescence finds a checkmate with line length > 0, it's beyond the main search
-            # and not reliable because quiescence doesn't search all opponent moves
+            # Only trust near-mate quiescence scores if the returned PV really ends in checkmate.
+            # Quiescence can also return alpha/beta bounds with an empty or partial line.
             checkmate_bonus = self.checkmate_bonus
             if abs(abs(eval_score) - checkmate_bonus) <= 1000:
-                distance_to_mate = len(line) if line else 0
-                # At depth == 0, we've searched original_depth plies
-                # Total distance to mate from root = original_depth + distance_to_mate
-                # If distance_to_mate > 0, the checkmate was found in quiescence beyond main search
-                # We should only trust checkmate if it's within the search depth
-                # Since we're at a leaf node (depth == 0), any checkmate with distance_to_mate > 0
-                # is beyond the main search depth. Replace with regular evaluation to be safe.
-                # The parent-level validation will do the final check based on search context.
-                if distance_to_mate > 0:
-                    # Checkmate found in quiescence beyond main search - replace with regular eval
+                if not self._line_ends_in_checkmate(board, line):
                     eval_score = self.evaluate(board, game_stage)
-                    line = []  # Clear the line since we're not using checkmate evaluation
+                    line = []
             
             # Exit quiescence node for visualization
             self.visualizer.exit_node(eval_score, "QUIESCENCE", line if line else [], 0, 0)
@@ -1110,21 +1344,46 @@ class MinimaxEngine(Engine):
             self.visualizer.exit_node(eval_score, "TERMINAL", [], 0, 0)
             return eval_score, [], SearchStatus.COMPLETE
         
+        tt_move = None
+        tt_key = None
+        tt_key_hash = None
+        if self.tt_enabled and depth > 0:
+            tt_key = board._transposition_key()
+            tt_key_hash = hash(tt_key)
+            tt_entry = self._probe_transposition_table(tt_key, tt_key_hash)
+            if tt_entry is not None:
+                self.visualizer.record_tt_hit(tt_entry.depth)
+                tt_move = tt_entry.best_move
+                if tt_entry.depth >= depth:
+                    if tt_entry.bound == TT_BOUND_EXACT:
+                        tt_line = self._reconstruct_exact_tt_line(board, depth)
+                        self.tt_cutoffs += 1
+                        self.visualizer.exit_node(tt_entry.score, "TT", [], 0, 0, tt_hit=True, tt_depth=tt_entry.depth)
+                        return tt_entry.score, tt_line, SearchStatus.COMPLETE
+                    if tt_entry.bound == TT_BOUND_LOWER:
+                        alpha = max(alpha, tt_entry.score)
+                    elif tt_entry.bound == TT_BOUND_UPPER:
+                        beta = min(beta, tt_entry.score)
+                    if alpha >= beta:
+                        self.tt_cutoffs += 1
+                        self.visualizer.exit_node(tt_entry.score, "TT", [], 0, 0, tt_hit=True, tt_depth=tt_entry.depth)
+                        return tt_entry.score, [], SearchStatus.COMPLETE
+        
         # Use optimized move generation and sorting
         # Calculate absolute depth from root for killer move lookup
         # In iterative deepening, the depth parameter is the remaining depth
         # So absolute_depth = max_search_depth - depth
         absolute_depth = self.depth - depth
-        sorted_moves = self._get_sorted_moves_optimized(board, absolute_depth)
+        sorted_moves = self._get_sorted_moves_optimized(board, absolute_depth, tt_move=tt_move)
         
         # White's turn: maximize evaluation
         if board.turn:
             max_eval = -float('inf')
             best_line = []
             best_move = None
-            original_alpha = alpha
+            tried_quiet_moves = []
             
-            for move in sorted_moves:
+            for move_index, move in enumerate(sorted_moves):
                 # Record move being considered for visualization
                 self.visualizer.record_move_considered(move, board)
                 
@@ -1137,19 +1396,49 @@ class MinimaxEngine(Engine):
                         self.visualizer.exit_node(None, "TIMEOUT", [], 0, 0)
                         return None, [], SearchStatus.PARTIAL
                 
+                is_quiet_move = not move.promotion and not board.is_capture(move)
+                if is_quiet_move:
+                    tried_quiet_moves.append(move)
+                
                 # Make move
                 board.push(move)
-                # Recursively search the resulting position
-                eval, line, status = self._minimax(
-                    board,
-                    depth - 1,
-                    alpha,
-                    beta,
-                    start_time=start_time,
-                    time_budget=time_budget,
-                    game_stage=game_stage,
-                    original_depth=original_depth,
-                )
+                
+                use_pvs = self.pvs_enabled and move_index > 0 and depth >= self.pvs_min_depth and alpha > -float('inf')
+                if use_pvs:
+                    # Search likely non-PV moves with a null window first, then re-search only on improvement.
+                    eval, line, status = self._minimax(
+                        board,
+                        depth - 1,
+                        alpha,
+                        min(beta, alpha + self.pvs_window),
+                        start_time=start_time,
+                        time_budget=time_budget,
+                        game_stage=game_stage,
+                        original_depth=original_depth,
+                    )
+                    if status == SearchStatus.COMPLETE and eval > alpha and eval < beta:
+                        eval, line, status = self._minimax(
+                            board,
+                            depth - 1,
+                            alpha,
+                            beta,
+                            start_time=start_time,
+                            time_budget=time_budget,
+                            game_stage=game_stage,
+                            original_depth=original_depth,
+                        )
+                else:
+                    # Recursively search the resulting position
+                    eval, line, status = self._minimax(
+                        board,
+                        depth - 1,
+                        alpha,
+                        beta,
+                        start_time=start_time,
+                        time_budget=time_budget,
+                        game_stage=game_stage,
+                        original_depth=original_depth,
+                    )
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1169,11 +1458,13 @@ class MinimaxEngine(Engine):
                 # Checkmate distance correction
                 checkmate_bonus = self.checkmate_bonus
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
-                    distance_to_mate = len(line)
-                    if eval > 0:  # White is winning
-                        eval = checkmate_bonus - distance_to_mate
-                    else:  # Black is winning
-                        eval = -(checkmate_bonus - distance_to_mate)
+                    full_line = [move] + line
+                    if self._line_ends_in_checkmate(board, full_line):
+                        distance_to_mate = len(full_line)
+                        if eval > 0:  # White is winning
+                            eval = checkmate_bonus - distance_to_mate
+                        else:  # Black is winning
+                            eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Apply repetition penalty/bonus using the search score to judge winning/losing
                 if repetition_after_move:
@@ -1194,7 +1485,18 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     # Store killer move before breaking
                     self._store_killer_move(move, absolute_depth, board)
+                    if is_quiet_move:
+                        self._update_history_heuristic(chess.WHITE, move, depth, tried_quiet_moves)
                     break  # Beta cutoff
+            
+            if tt_key is not None and tt_key_hash is not None and best_move is not None:
+                if max_eval <= alpha_orig:
+                    tt_bound = TT_BOUND_UPPER
+                elif max_eval >= beta_orig:
+                    tt_bound = TT_BOUND_LOWER
+                else:
+                    tt_bound = TT_BOUND_EXACT
+                self._store_transposition_table(tt_key, tt_key_hash, depth, max_eval, tt_bound, best_move)
             
             # Exit node for visualization
             if self.viz_enabled:
@@ -1208,9 +1510,9 @@ class MinimaxEngine(Engine):
             min_eval = float('inf')
             best_line = []
             best_move = None
-            original_beta = beta
+            tried_quiet_moves = []
             
-            for move in sorted_moves:
+            for move_index, move in enumerate(sorted_moves):
                 # Record move being considered for visualization
                 self.visualizer.record_move_considered(move, board)
                 
@@ -1223,19 +1525,49 @@ class MinimaxEngine(Engine):
                         self.visualizer.exit_node(None, "TIMEOUT", [], 0, 0)
                         return None, [], SearchStatus.PARTIAL
                 
+                is_quiet_move = not move.promotion and not board.is_capture(move)
+                if is_quiet_move:
+                    tried_quiet_moves.append(move)
+                
                 # Make move
                 board.push(move)
-                # Recursively search the resulting position
-                eval, line, status = self._minimax(
-                    board,
-                    depth - 1,
-                    alpha,
-                    beta,
-                    start_time=start_time,
-                    time_budget=time_budget,
-                    game_stage=game_stage,
-                    original_depth=original_depth,
-                )
+                
+                use_pvs = self.pvs_enabled and move_index > 0 and depth >= self.pvs_min_depth and beta < float('inf')
+                if use_pvs:
+                    # Search likely non-PV moves with a null window first, then re-search only on improvement.
+                    eval, line, status = self._minimax(
+                        board,
+                        depth - 1,
+                        max(alpha, beta - self.pvs_window),
+                        beta,
+                        start_time=start_time,
+                        time_budget=time_budget,
+                        game_stage=game_stage,
+                        original_depth=original_depth,
+                    )
+                    if status == SearchStatus.COMPLETE and eval < beta and eval > alpha:
+                        eval, line, status = self._minimax(
+                            board,
+                            depth - 1,
+                            alpha,
+                            beta,
+                            start_time=start_time,
+                            time_budget=time_budget,
+                            game_stage=game_stage,
+                            original_depth=original_depth,
+                        )
+                else:
+                    # Recursively search the resulting position
+                    eval, line, status = self._minimax(
+                        board,
+                        depth - 1,
+                        alpha,
+                        beta,
+                        start_time=start_time,
+                        time_budget=time_budget,
+                        game_stage=game_stage,
+                        original_depth=original_depth,
+                    )
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
@@ -1254,11 +1586,13 @@ class MinimaxEngine(Engine):
                 # Checkmate distance correction
                 checkmate_bonus = self.checkmate_bonus
                 if abs(abs(eval) - checkmate_bonus) <= 1000:
-                    distance_to_mate = len(line)
-                    if eval > 0:  # White is winning
-                        eval = checkmate_bonus - distance_to_mate
-                    else:  # Black is winning
-                        eval = -(checkmate_bonus - distance_to_mate)
+                    full_line = [move] + line
+                    if self._line_ends_in_checkmate(board, full_line):
+                        distance_to_mate = len(full_line)
+                        if eval > 0:  # White is winning
+                            eval = checkmate_bonus - distance_to_mate
+                        else:  # Black is winning
+                            eval = -(checkmate_bonus - distance_to_mate)
                 
                 # Apply repetition penalty/bonus using the search score to judge winning/losing
                 if repetition_after_move:
@@ -1279,7 +1613,18 @@ class MinimaxEngine(Engine):
                 if beta <= alpha:
                     # Store killer move before breaking
                     self._store_killer_move(move, absolute_depth, board)
+                    if is_quiet_move:
+                        self._update_history_heuristic(chess.BLACK, move, depth, tried_quiet_moves)
                     break  # Alpha cutoff
+            
+            if tt_key is not None and tt_key_hash is not None and best_move is not None:
+                if min_eval <= alpha_orig:
+                    tt_bound = TT_BOUND_UPPER
+                elif min_eval >= beta_orig:
+                    tt_bound = TT_BOUND_LOWER
+                else:
+                    tt_bound = TT_BOUND_EXACT
+                self._store_transposition_table(tt_key, tt_key_hash, depth, min_eval, tt_bound, best_move)
             
                     
             # Exit node for visualization
@@ -1587,11 +1932,28 @@ class MinimaxEngine(Engine):
         # Higher values = more promising captures
         return self.mvv_lva_values[victim_piece_type] * 10 - self.mvv_lva_values[attacker_piece_type]
     
-    def _is_mate_found(self, best_value, best_line):
+    def _line_ends_in_checkmate(self, board, line):
+        """Return True if playing the supplied PV from board ends in checkmate."""
+        if not line:
+            return False
+
+        temp_board = board.copy(stack=False)
+        try:
+            for move in line:
+                if not temp_board.is_legal(move):
+                    return False
+                temp_board.push(move)
+        except Exception:
+            return False
+
+        return temp_board.is_checkmate()
+
+    def _is_mate_found(self, board, best_value, best_line):
         """
         Check if a mate (checkmate) or mate in 2 (distance to mate = 1) was found.
         
         Args:
+            board: Root position for the current search
             best_value: Best evaluation value from search
             best_line: Principal variation (line of moves)
             
@@ -1602,34 +1964,18 @@ class MinimaxEngine(Engine):
         """
         checkmate_bonus = self.checkmate_bonus
         
-        # Check if evaluation indicates a mate
-        # Mate evaluations are: checkmate_bonus - distance_to_mate
-        # So checkmate_bonus - 1 <= abs(eval) <= checkmate_bonus + 1000 (with some tolerance)
+        # A numeric score near checkmate_bonus is not enough on its own because alpha-beta and
+        # quiescence can return bound scores with empty or partial principal variations.
         abs_eval = abs(best_value)
         
         if abs_eval >= checkmate_bonus - 1 and abs_eval <= checkmate_bonus + 1000:
-            # This is a mate evaluation
-            # Distance to mate is encoded in the evaluation
-            # Format: checkmate_bonus - distance_to_mate (for winning side)
-            if best_value > 0:  # White is winning
-                distance_to_mate = checkmate_bonus - best_value
-            else:  # Black is winning (negative eval: -(checkmate_bonus - distance))
-                distance_to_mate = checkmate_bonus + best_value  # best_value is negative
-            
-            # Ensure distance_to_mate is an integer and non-negative
-            distance_to_mate = int(round(distance_to_mate))
-            if distance_to_mate < 0:
-                distance_to_mate = 0
-            
-            # Also check the line length as a backup
-            if best_line:
-                line_distance = len(best_line)
-                # Use the minimum of the two (evaluation-based and line-based)
-                distance_to_mate = min(distance_to_mate, line_distance)
-            
-            # Return True if mate (distance 0) or mate in 2 (distance 1)
-            if distance_to_mate <= 1:
-                return True, distance_to_mate
+            if not self._line_ends_in_checkmate(board, best_line):
+                return False, None
+
+            if len(best_line) % 2 == 1:
+                distance_to_mate = len(best_line) // 2
+                if distance_to_mate <= 1:
+                    return True, distance_to_mate
         
         return False, None
     
@@ -1709,17 +2055,18 @@ class MinimaxEngine(Engine):
     
 
     
-    def _get_sorted_moves_optimized(self, board, depth=0):
+    def _get_sorted_moves_optimized(self, board, depth=0, tt_move=None):
         """
         Optimized move generation and sorting with killer move support.
         
         Move order:
-        1. Promotions (highest priority)
-        2. Winning captures (MVV-LVA > 0)
-        3. Killer moves
-        4. Other captures (MVV-LVA <= 0)
-        5. Checks
-        6. Non-captures
+        1. TT move (if available)
+        2. Promotions (highest priority after TT move)
+        3. Winning captures (MVV-LVA > 0)
+        4. Killer moves
+        5. Other captures (MVV-LVA <= 0)
+        6. Checks
+        7. Non-captures
         
         Args:
             board: Current board state
@@ -1735,12 +2082,17 @@ class MinimaxEngine(Engine):
         killer_moves = []
         checks = []
         non_captures = []
+        tt_moves = []
         
         # Get killer moves for this depth
         current_killers = self.killer_moves.get(depth, {})
         
         # Single pass to categorize moves
         for move in legal_moves:
+            if tt_move is not None and move == tt_move:
+                tt_moves.append(move)
+                continue
+            
             # Check for promotions first (highest priority)
             if move.promotion:
                 # Store promotion with its net value for sorting
@@ -1764,7 +2116,7 @@ class MinimaxEngine(Engine):
             elif self._is_check_fast(board, move):
                 checks.append(move)
             else:
-                non_captures.append(move)
+                non_captures.append((move, self._get_history_score(board, move)))
         
         # Sort promotions by net value (highest first) - zero overhead if promotions list is empty
         if promotions:
@@ -1787,14 +2139,19 @@ class MinimaxEngine(Engine):
         if killer_moves:
             self.killer_moves_used += len(killer_moves)
         
-        # Combine moves in the specified order: promotions first, then winning captures, then killer moves, then rest
+        # Sort quiet non-captures by history heuristic score (highest first).
+        non_captures.sort(key=lambda x: x[1], reverse=True)
+        sorted_non_captures = [move for move, _ in non_captures]
+        
+        # Combine moves in the specified order: TT move first, then promotions, captures, killers, and the rest
         result = []
+        result.extend(tt_moves)
         result.extend(sorted_promotions)
         result.extend(sorted_winning_captures)
         result.extend(sorted_killer_moves)
         result.extend(sorted_other_captures)
         result.extend(checks)
-        result.extend(non_captures)
+        result.extend(sorted_non_captures)
         
         return result
 
