@@ -361,6 +361,12 @@ class MinimaxEngine(Engine):
     def _current_repetition_context(self):
         """Return an exact, hashable repetition-history context for TT safety."""
         return tuple(self._repetition_history_keys)
+
+    def _has_repeated_since_last_zeroing(self):
+        """Return True if any position has already repeated in the current reversible segment."""
+        if not hasattr(self, "_repetition_key_counts"):
+            return False
+        return any(count > 1 for count in self._repetition_key_counts.values())
     
     def _update_history_heuristic(self, color, best_move, depth, tried_quiet_moves):
         """Reward the quiet cutoff move and lightly penalize earlier quiet moves."""
@@ -2467,8 +2473,8 @@ class MinimaxEngine(Engine):
                     self.logger.log("⚠️  Position not found in tablebase")
                 return None
             
-            # WDL values: 2 = win, 1 = cursed win, 0 = draw, -1 = blessed loss, -2 = loss
-            # NOTE: The WDL value is from the perspective of side that will move next (after this move)
+            # WDL values: 2 = win, 1 = cursed win, 0 = draw, -1 = blessed loss, -2 = loss.
+            # Results are always from the perspective of the side to move in the probed board.
             wdl_names = {2: "Win", 1: "Cursed Win", 0: "Draw", -1: "Blessed Loss", -2: "Loss"}
             if not self.quiet:
                 self.logger.log(f"📊 Tablebase: WDL={wdl} ({wdl_names.get(wdl, 'Unknown')})")
@@ -2486,6 +2492,9 @@ class MinimaxEngine(Engine):
                 self.logger.log(f"🔍 Checking {len(list(board.legal_moves))} legal moves...")
             
             root_is_white = board.turn
+            root_halfmove_clock = board.halfmove_clock
+            self._initialize_repetition_tracking(board)
+            repeated_since_zeroing = self._has_repeated_since_last_zeroing()
 
             moves_checked = 0
             for move in board.legal_moves:
@@ -2495,8 +2504,9 @@ class MinimaxEngine(Engine):
                 # Check if this is a pawn move or capture before making the move
                 is_pawn_move = board.piece_type_at(move.from_square) == chess.PAWN
                 is_capture = board.is_capture(move)
+                is_zeroing_move = is_pawn_move or is_capture
                 
-                board.push(move)
+                self._push_with_repetition_tracking(board, move)
                 try:
                     move_wdl = self.tablebase.get_wdl(board)
                     move_dtz = self.tablebase.get_dtz(board)
@@ -2504,50 +2514,72 @@ class MinimaxEngine(Engine):
                     
                     if move_wdl is not None:
                         move_eval = self.evaluate(board)
+                        root_move_wdl = -move_wdl
+                        if self._is_threefold_repetition_position(board):
+                            root_move_wdl = 0
+                            root_move_dtz = 0
+                            tb_rank = 0
+                        elif is_zeroing_move:
+                            root_move_dtz = self._tablebase_dtz_before_zeroing(root_move_wdl)
+                            tb_rank = self._tablebase_root_rank(root_move_dtz, root_halfmove_clock, repeated_since_zeroing)
+                        else:
+                            root_move_dtz = None if move_dtz is None else -move_dtz
+                            if root_move_dtz is not None:
+                                if root_move_dtz > 0:
+                                    root_move_dtz += 1
+                                elif root_move_dtz < 0:
+                                    root_move_dtz -= 1
+                            tb_rank = self._tablebase_root_rank(root_move_dtz or 0, root_halfmove_clock, repeated_since_zeroing)
 
                         move_candidates.append({
                             'move': move,
                             'san': move_san,
-                            'wdl': move_wdl,
-                            'dtz': move_dtz,
+                            'child_wdl': move_wdl,
+                            'child_dtz': move_dtz,
+                            'root_wdl': root_move_wdl,
+                            'root_dtz': root_move_dtz,
+                            'tb_rank': tb_rank,
                             'is_pawn_move': is_pawn_move,
                             'is_capture': is_capture,
                             'eval': move_eval
                         })
                         
                         if not self.quiet:
-                            self.logger.log(f"  ✅ {move_san}: WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), DTZ={move_dtz}")
+                            self.logger.log(
+                                f"  ✅ {move_san}: child WDL={move_wdl} ({wdl_names.get(move_wdl, 'Unknown')}), "
+                                f"child DTZ={move_dtz} -> root WDL={root_move_wdl} ({wdl_names.get(root_move_wdl, 'Unknown')}), "
+                                f"root DTZ={root_move_dtz}, rank={tb_rank}"
+                            )
                     else:
                         if not self.quiet:
                             self.logger.log(f"  ❌ {move_san}: Not found in tablebase")
                 except Exception as e:
                     if not self.quiet:
                         self.logger.log(f"⚠️  Error checking move {move_san}: {e}")
-                board.pop()
+                self._pop_with_repetition_tracking(board)
             
             # Now apply our selection logic
             if move_candidates:
-                # Sort by WDL first (lower is better for the opponent)
-                # Then by abs(DTZ) ascending (fastest conversion)
-                # Then by evaluation descending (prefer preserving material)
+                # Rank from the root side's perspective. TB rank is primary.
                 def move_priority(candidate):
-                    wdl = candidate['wdl']
-                    dtz = candidate['dtz'] if candidate['dtz'] is not None else 999
-                    abs_dtz = abs(dtz)
                     # eval is from White's perspective; convert to "good for us"
                     eval_for_us = candidate['eval'] if root_is_white else -candidate['eval']
-                    return (wdl, abs_dtz, -eval_for_us)
+                    return (-candidate['tb_rank'], -candidate['root_wdl'], -eval_for_us)
                 
                 move_candidates.sort(key=move_priority)
                 best_candidate = move_candidates[0]
                 
                 best_move = best_candidate['move']
-                best_wdl = best_candidate['wdl']
-                best_dtz = best_candidate['dtz']
+                best_wdl = best_candidate['root_wdl']
+                best_dtz = best_candidate['root_dtz']
                 
                 if not self.quiet:
                     side_to_move = "White" if board.turn else "Black"
-                    self.logger.log(f"🎯 Selected {best_candidate['san']} for {side_to_move} (WDL={best_wdl}, DTZ={best_dtz}, Pawn/Capture={best_candidate['is_pawn_move'] or best_candidate['is_capture']})")
+                    self.logger.log(
+                        f"🎯 Selected {best_candidate['san']} for {side_to_move} "
+                        f"(rank={best_candidate['tb_rank']}, root WDL={best_wdl}, root DTZ={best_dtz}, "
+                        f"Pawn/Capture={best_candidate['is_pawn_move'] or best_candidate['is_capture']})"
+                    )
             else:
                 best_move = None
                 best_wdl = None
@@ -2575,6 +2607,30 @@ class MinimaxEngine(Engine):
     def _get_piece_value(self, piece_type):
         """Get a cached material value for the given piece type."""
         return self.search_piece_values.get(piece_type, 0)
+
+    def _tablebase_dtz_before_zeroing(self, root_wdl):
+        """Return the root-side DTZ for an immediate zeroing move from the given WDL."""
+        if root_wdl == 2:
+            return 1
+        if root_wdl == 1:
+            return 101
+        if root_wdl == -1:
+            return -101
+        if root_wdl == -2:
+            return -1
+        return 0
+
+    def _tablebase_root_rank(self, root_dtz, halfmove_clock, repeated_since_zeroing):
+        """Mirror Stockfish-style root ranking for DTZ tablebase moves."""
+        if root_dtz > 0:
+            if root_dtz + halfmove_clock <= 99 and not repeated_since_zeroing:
+                return 1000
+            return 1000 - (root_dtz + halfmove_clock)
+        if root_dtz < 0:
+            if (-root_dtz * 2) + halfmove_clock < 100:
+                return -1000
+            return -1000 + ((-root_dtz) + halfmove_clock)
+        return 0
 
     def _get_pawn_fork_info(self, board, move):
         """

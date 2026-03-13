@@ -207,6 +207,28 @@ class TestMustFindMoves(unittest.TestCase):
         best_move = engine.get_move(board, time_budget=0.5)
         self.assertNotEqual(board.san(best_move), "Kf1")
 
+    def test_tablebase_zeroing_dtz_matches_wdl_outcome(self):
+        """Immediate zeroing moves should get the standard Syzygy DTZ values."""
+        self.assertEqual(self.engine._tablebase_dtz_before_zeroing(2), 1)
+        self.assertEqual(self.engine._tablebase_dtz_before_zeroing(1), 101)
+        self.assertEqual(self.engine._tablebase_dtz_before_zeroing(0), 0)
+        self.assertEqual(self.engine._tablebase_dtz_before_zeroing(-1), -101)
+        self.assertEqual(self.engine._tablebase_dtz_before_zeroing(-2), -1)
+
+    def test_tablebase_root_rank_prefers_lower_dtz_after_repetition(self):
+        """Once a repetition has occurred, TB ranking should favor moves that lower DTZ."""
+        promoting_rank = self.engine._tablebase_root_rank(1, 15, True)
+        shuffling_rank = self.engine._tablebase_root_rank(3, 15, True)
+        self.assertGreater(promoting_rank, shuffling_rank)
+
+    def test_tablebase_root_rank_keeps_wins_above_draws_above_losses(self):
+        """Winning ranks should outrank draws, which should outrank losing ranks."""
+        winning_rank = self.engine._tablebase_root_rank(3, 0, False)
+        drawing_rank = self.engine._tablebase_root_rank(0, 0, False)
+        losing_rank = self.engine._tablebase_root_rank(-3, 0, False)
+        self.assertGreater(winning_rank, drawing_rank)
+        self.assertGreater(drawing_rank, losing_rank)
+
 def run_tests():
     """Run the tests and return results"""
     print("Running expected moves tests...")
