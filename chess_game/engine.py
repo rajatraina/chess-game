@@ -146,8 +146,17 @@ class MinimaxEngine(Engine):
         self.quiescence_additional_depth_limit_captures = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_captures", 8)
         self.quiescence_additional_depth_limit_checks = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_checks", 8)
         self.quiescence_additional_depth_limit_promotions = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_promotions", 8)
+        self.quiescence_additional_depth_limit_pawn_forks = self.evaluation_manager.evaluator.config.get("quiescence_additional_depth_limit_pawn_forks", 1)
         # Legacy flags (kept for backward compatibility, but now controlled by depth limits)
         self.quiescence_include_checks = self.evaluation_manager.evaluator.config.get("quiescence_include_checks", True)
+        piece_values = self.evaluation_manager.evaluator.config.get("piece_values", {})
+        self.search_piece_values = {
+            chess.PAWN: piece_values.get("pawn", 100),
+            chess.KNIGHT: piece_values.get("knight", 330),
+            chess.BISHOP: piece_values.get("bishop", 335),
+            chess.ROOK: piece_values.get("rook", 500),
+            chess.QUEEN: piece_values.get("queen", 990),
+        }
         
         # Initialize search visualizer
         self.viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
@@ -237,6 +246,121 @@ class MinimaxEngine(Engine):
         if not self.history_heuristic_enabled:
             return 0
         return self.history_table[int(board.turn)][move.from_square][move.to_square]
+
+    def _initialize_repetition_tracking(self, board):
+        """Initialize exact repetition history from the provided game history."""
+        if not hasattr(board, "_transposition_key"):
+            self._repetition_history_keys = []
+            self._repetition_key_counts = {}
+            self._repetition_push_stack = []
+            return
+
+        temp_board = board.copy(stack=True)
+        moves = []
+        while temp_board.move_stack:
+            moves.append(temp_board.pop())
+
+        history_keys = [temp_board._transposition_key()]
+        for move in reversed(moves):
+            parent_castling_rights = temp_board.castling_rights
+            parent_ep_square = temp_board.ep_square
+            moved_piece_type = temp_board.piece_type_at(move.from_square)
+            is_capture = temp_board.is_capture(move)
+
+            temp_board.push(move)
+            child_key = temp_board._transposition_key()
+
+            resets_history = (
+                is_capture
+                or moved_piece_type == chess.PAWN
+                or temp_board.castling_rights != parent_castling_rights
+                or parent_ep_square is not None
+                or temp_board.ep_square is not None
+            )
+
+            if resets_history:
+                history_keys = [child_key]
+            else:
+                history_keys.append(child_key)
+
+        repetition_key_counts = {}
+        for key in history_keys:
+            repetition_key_counts[key] = repetition_key_counts.get(key, 0) + 1
+
+        self._repetition_history_keys = history_keys
+        self._repetition_key_counts = repetition_key_counts
+        self._repetition_push_stack = []
+
+    def _push_with_repetition_tracking(self, board, move):
+        """Push a move while keeping exact repetition history in sync."""
+        parent_castling_rights = board.castling_rights
+        parent_ep_square = board.ep_square
+        moved_piece_type = board.piece_type_at(move.from_square)
+        is_capture = board.is_capture(move)
+
+        board.push(move)
+
+        if not hasattr(board, "_transposition_key"):
+            return
+
+        child_key = board._transposition_key()
+        resets_history = (
+            is_capture
+            or moved_piece_type == chess.PAWN
+            or board.castling_rights != parent_castling_rights
+            or parent_ep_square is not None
+            or board.ep_square is not None
+        )
+
+        if resets_history:
+            snapshot = (self._repetition_history_keys, self._repetition_key_counts)
+            self._repetition_push_stack.append(("reset", snapshot))
+            self._repetition_history_keys = [child_key]
+            self._repetition_key_counts = {child_key: 1}
+            return
+
+        previous_count = self._repetition_key_counts.get(child_key, 0)
+        self._repetition_push_stack.append(("append", child_key, previous_count))
+        self._repetition_history_keys.append(child_key)
+        self._repetition_key_counts[child_key] = previous_count + 1
+
+    def _pop_with_repetition_tracking(self, board):
+        """Undo a tracked move push."""
+        board.pop()
+
+        if not hasattr(board, "_transposition_key"):
+            return
+
+        action = self._repetition_push_stack.pop()
+        if action[0] == "reset":
+            self._repetition_history_keys, self._repetition_key_counts = action[1]
+            return
+
+        _, child_key, previous_count = action
+        self._repetition_history_keys.pop()
+        if previous_count == 0:
+            self._repetition_key_counts.pop(child_key, None)
+        else:
+            self._repetition_key_counts[child_key] = previous_count
+
+    def _current_repetition_count(self, board):
+        """Return how many times the current position has appeared in tracked history."""
+        if not hasattr(board, "_transposition_key"):
+            try:
+                return 3 if board.is_repetition(3) else 1
+            except TypeError:
+                return 3 if board.is_repetition() else 1
+
+        key = board._transposition_key()
+        return self._repetition_key_counts.get(key, 0)
+
+    def _is_threefold_repetition_position(self, board):
+        """Return True if the current position can be claimed as a threefold repetition now."""
+        return self._current_repetition_count(board) >= 3
+
+    def _current_repetition_context(self):
+        """Return an exact, hashable repetition-history context for TT safety."""
+        return tuple(self._repetition_history_keys)
     
     def _update_history_heuristic(self, color, best_move, depth, tried_quiet_moves):
         """Reward the quiet cutoff move and lightly penalize earlier quiet moves."""
@@ -307,32 +431,9 @@ class MinimaxEngine(Engine):
         if not self.tt_enabled or depth <= 0:
             return []
 
-        temp_board = board.copy(stack=False)
-        remaining_depth = depth
-        line = []
-        seen_keys = set()
-
-        while remaining_depth > 0 and not temp_board.is_game_over():
-            key = temp_board._transposition_key()
-            if key in seen_keys:
-                break
-            seen_keys.add(key)
-
-            entry = self._lookup_transposition_table(key, hash(key))
-            if (
-                entry is None
-                or entry.bound != TT_BOUND_EXACT
-                or entry.depth < remaining_depth
-                or entry.best_move is None
-                or not temp_board.is_legal(entry.best_move)
-            ):
-                break
-
-            line.append(entry.best_move)
-            temp_board.push(entry.best_move)
-            remaining_depth -= 1
-
-        return line
+        # Reconstructing a history-aware TT PV would require mirroring the repetition context
+        # step-by-step. Returning an empty line here is safer than following a stale path.
+        return []
     
     def _select_tt_replacement_index(self, bucket):
         """Choose which bucket entry to replace, preferring stale and shallow entries."""
@@ -432,6 +533,13 @@ class MinimaxEngine(Engine):
         """
         # Count this node
         self.nodes_searched += 1
+
+        if self._is_threefold_repetition_position(board):
+            self.visualizer.exit_node(self.repetition_eval, "REPETITION", [], 0, 0)
+            return self.repetition_eval, [], SearchStatus.COMPLETE
+
+        if self._is_threefold_repetition_position(board):
+            return self.repetition_eval, [], SearchStatus.COMPLETE
         
         # Check for game over conditions
         if board.is_game_over():
@@ -444,8 +552,7 @@ class MinimaxEngine(Engine):
                     return checkmate_bonus, [], SearchStatus.COMPLETE
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
                 return self.draw_value, [], SearchStatus.COMPLETE  # Draw
-            elif board.is_repetition():
-                return self.repetition_eval, [], SearchStatus.COMPLETE  # 3-fold repetition
+            # Claimable threefold repetition is handled when the move that created it is scored.
         
         # Leaf node: use quiescence search
         if depth == 0:
@@ -466,36 +573,18 @@ class MinimaxEngine(Engine):
         
         for move in sorted_moves:
             # Make the move
-            board.push(move)
+            self._push_with_repetition_tracking(board, move)
             
             # Search the resulting position
             value, line, status = self._shallow_search_with_quiescence(board, depth - 1, alpha, beta, game_stage)
             
             # If search was partial, propagate up immediately
             if status == SearchStatus.PARTIAL:
-                board.pop()
+                self._pop_with_repetition_tracking(board)
                 return None, [], SearchStatus.PARTIAL
             
-            # Check repetition while move is still pushed; skip for irreversible moves
-            repetition_after_move = False
-            if not board.is_irreversible(board.peek()):
-                repetition_after_move = board.is_repetition()
-            
             # Undo the move
-            board.pop()
-            
-            if repetition_after_move:
-                repetition_eval = self.repetition_eval
-                if board.turn:  # White to move
-                    if value > 20:  # We're ahead — penalize draw
-                        value = -1000
-                    elif value < -20:  # We're behind — prefer draw
-                        value = repetition_eval
-                else:  # Black to move
-                    if value < -20:  # We're ahead — penalize draw
-                        value = 1000
-                    elif value > 20:  # We're behind — prefer draw
-                        value = repetition_eval
+            self._pop_with_repetition_tracking(board)
             
             # Update best move based on whose turn it is
             if board.turn:  # White to move: maximize
@@ -531,6 +620,9 @@ class MinimaxEngine(Engine):
         """
         # Count this node
         self.nodes_searched += 1
+
+        if self._is_threefold_repetition_position(board):
+            return self.repetition_eval, [], SearchStatus.COMPLETE
         
         # Check for game over conditions
         if board.is_game_over():
@@ -588,18 +680,18 @@ class MinimaxEngine(Engine):
         
         for move in moves_to_search:
             # Make the move
-            board.push(move)
+            self._push_with_repetition_tracking(board, move)
             
             # Recursive quiescence search
             value, line, status = self._quiescence_shallow(board, alpha, beta, depth + 1, game_stage)
             
             # If search was partial, propagate up immediately
             if status == SearchStatus.PARTIAL:
-                board.pop()
+                self._pop_with_repetition_tracking(board)
                 return None, [], SearchStatus.PARTIAL
             
             # Undo the move
-            board.pop()
+            self._pop_with_repetition_tracking(board)
             
             # Update best move
             if board.turn:  # White to move: maximize
@@ -642,7 +734,7 @@ class MinimaxEngine(Engine):
         
         for move in legal_moves:
             # Make the move
-            board.push(move)
+            self._push_with_repetition_tracking(board, move)
             
             # Perform shallow search
             eval_score, _, status = self._shallow_search_with_quiescence(
@@ -655,11 +747,11 @@ class MinimaxEngine(Engine):
             
             # If search was partial, skip this move
             if status == SearchStatus.PARTIAL:
-                board.pop()
+                self._pop_with_repetition_tracking(board)
                 continue
             
             # Undo the move
-            board.pop()
+            self._pop_with_repetition_tracking(board)
             
             move_evaluations.append((move, eval_score))
         
@@ -772,6 +864,7 @@ class MinimaxEngine(Engine):
         self.search_age += 1
         self._reset_tt_stats()
         self._age_history_heuristic()
+        self._initialize_repetition_tracking(board)
         
         # Clear killer moves for new search to avoid stale data
         self._clear_killer_moves()
@@ -967,7 +1060,7 @@ class MinimaxEngine(Engine):
                 original_turn = board.turn
                 
                 # Make the move on the board
-                board.push(move)
+                self._push_with_repetition_tracking(board, move)
                 
                 # Search the resulting position
                 value, line, status = self._minimax(
@@ -980,10 +1073,10 @@ class MinimaxEngine(Engine):
                     game_stage=game_stage,
                     original_depth=current_depth - 1,
                 )
-                
+
                 if status == SearchStatus.PARTIAL:
                     # Undo the move to restore the original board state
-                    board.pop()
+                    self._pop_with_repetition_tracking(board)
                     # Skip this move due to timeout - log and stop searching remaining moves
                     self.logger.log_info(f"Move {self._move_to_san(board, move)} timed out during search")
                     iteration_has_timeouts = True  # Mark that this iteration had timeouts
@@ -991,7 +1084,7 @@ class MinimaxEngine(Engine):
                 
                 # Move completed successfully
                 # Undo the move to restore the original board state
-                board.pop()
+                self._pop_with_repetition_tracking(board)
 
                 # Update global best move - compare against existing best move
                 if first_completed_move is None:
@@ -1340,8 +1433,6 @@ class MinimaxEngine(Engine):
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
                 # Draw conditions (except repetition)
                 eval_score = self.draw_value
-            elif board.is_repetition():
-                eval_score = self.repetition_eval
             else:
                 # Other game over conditions
                 eval_score = self.evaluate(board, game_stage)
@@ -1354,7 +1445,7 @@ class MinimaxEngine(Engine):
         tt_key = None
         tt_key_hash = None
         if self.tt_enabled and depth > 0:
-            tt_key = board._transposition_key()
+            tt_key = (board._transposition_key(), self._current_repetition_context())
             tt_key_hash = hash(tt_key)
             tt_entry = self._probe_transposition_table(tt_key, tt_key_hash)
             if tt_entry is not None:
@@ -1407,7 +1498,7 @@ class MinimaxEngine(Engine):
                     tried_quiet_moves.append(move)
                 
                 # Make move
-                board.push(move)
+                self._push_with_repetition_tracking(board, move)
                 
                 use_pvs = self.pvs_enabled and move_index > 0 and depth >= self.pvs_min_depth and alpha > -float('inf')
                 if use_pvs:
@@ -1448,18 +1539,12 @@ class MinimaxEngine(Engine):
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
-                    board.pop()
+                    self._pop_with_repetition_tracking(board)
                     self.visualizer.exit_node(None, "PARTIAL", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
 
-                # Check repetition while the move is still pushed (avoids an extra push/pop).
-                # Only reversible moves (non-captures, non-pawn moves) can cause repetition.
-                repetition_after_move = False
-                if not board.is_irreversible(board.peek()):
-                    repetition_after_move = board.is_repetition()
-
                 # Undo move
-                board.pop()
+                self._pop_with_repetition_tracking(board)
                 
                 # Checkmate distance correction
                 checkmate_bonus = self.checkmate_bonus
@@ -1471,14 +1556,6 @@ class MinimaxEngine(Engine):
                             eval = checkmate_bonus - distance_to_mate
                         else:  # Black is winning
                             eval = -(checkmate_bonus - distance_to_mate)
-                
-                # Apply repetition penalty/bonus using the search score to judge winning/losing
-                if repetition_after_move:
-                    repetition_eval = self.repetition_eval
-                    if eval > 20:  # We're ahead — penalize draw
-                        eval = -1000
-                    elif eval < -20:  # We're behind — prefer draw
-                        eval = repetition_eval
                 
                 # Update best move if this is better
                 if eval > max_eval:
@@ -1536,7 +1613,7 @@ class MinimaxEngine(Engine):
                     tried_quiet_moves.append(move)
                 
                 # Make move
-                board.push(move)
+                self._push_with_repetition_tracking(board, move)
                 
                 use_pvs = self.pvs_enabled and move_index > 0 and depth >= self.pvs_min_depth and beta < float('inf')
                 if use_pvs:
@@ -1577,17 +1654,12 @@ class MinimaxEngine(Engine):
                 
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
-                    board.pop()
+                    self._pop_with_repetition_tracking(board)
                     self.visualizer.exit_node(None, "PARTIAL", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
 
-                # Check repetition while the move is still pushed (avoids an extra push/pop).
-                repetition_after_move = False
-                if not board.is_irreversible(board.peek()):
-                    repetition_after_move = board.is_repetition()
-
                 # Undo move
-                board.pop()
+                self._pop_with_repetition_tracking(board)
                 
                 # Checkmate distance correction
                 checkmate_bonus = self.checkmate_bonus
@@ -1599,14 +1671,6 @@ class MinimaxEngine(Engine):
                             eval = checkmate_bonus - distance_to_mate
                         else:  # Black is winning
                             eval = -(checkmate_bonus - distance_to_mate)
-                
-                # Apply repetition penalty/bonus using the search score to judge winning/losing
-                if repetition_after_move:
-                    repetition_eval = self.repetition_eval
-                    if eval < -20:  # We're ahead (Black) — penalize draw
-                        eval = 1000
-                    elif eval > 20:  # We're behind (Black) — prefer draw
-                        eval = repetition_eval
                 
                 # Update best move if this is better
                 if eval < min_eval:
@@ -1678,7 +1742,7 @@ class MinimaxEngine(Engine):
     
     
 
-    def _quiescence(self, board, alpha, beta, depth=0, game_stage=None):
+    def _quiescence(self, board, alpha, beta, depth=0, game_stage=None, pending_pawn_fork=None):
         """
         Quiescence search - continues searching captures and checks to avoid horizon effect.
         
@@ -1701,6 +1765,9 @@ class MinimaxEngine(Engine):
         """
         # Count this node
         self.nodes_searched += 1
+
+        if self._is_threefold_repetition_position(board):
+            return self.repetition_eval, [], SearchStatus.COMPLETE
         
         # Check for game over conditions first
         # NOTE: THIS CHECK IS COMMENTED OUT AS IT FEELS UNNECESSARY
@@ -1714,8 +1781,7 @@ class MinimaxEngine(Engine):
                     return checkmate_bonus, [], SearchStatus.COMPLETE
             elif board.is_stalemate() or board.is_insufficient_material() or board.is_fifty_moves():
                 return self.draw_value, [], SearchStatus.COMPLETE
-            elif board.is_repetition():
-                return self.repetition_eval, [], SearchStatus.COMPLETE
+            # Claimable threefold repetition is handled when the move that created it is scored.
             else:
                 return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
             
@@ -1725,7 +1791,8 @@ class MinimaxEngine(Engine):
         max_quiescence_depth = max(
             self.quiescence_additional_depth_limit_captures,
             self.quiescence_additional_depth_limit_checks,
-            self.quiescence_additional_depth_limit_promotions
+            self.quiescence_additional_depth_limit_promotions,
+            self.quiescence_additional_depth_limit_pawn_forks,
         )
         if depth > max_quiescence_depth:
             return self.evaluate(board, game_stage), [], SearchStatus.COMPLETE
@@ -1774,6 +1841,7 @@ class MinimaxEngine(Engine):
         # Check if position is in check
         is_in_check = board.is_check()
         
+        include_pawn_forks = False
         if is_in_check:
             # IN CHECK: Search ALL legal moves (must respond to check)
             moves_to_search = list(board.legal_moves)
@@ -1807,13 +1875,24 @@ class MinimaxEngine(Engine):
             include_captures = depth <= self.quiescence_additional_depth_limit_captures
             include_checks = depth <= self.quiescence_additional_depth_limit_checks
             include_promotions = depth <= self.quiescence_additional_depth_limit_promotions
+            include_pawn_forks = depth <= self.quiescence_additional_depth_limit_pawn_forks
             
             moves_to_search = self._get_quiescence_moves(
                 board,
                 include_captures=include_captures,
                 include_checks=include_checks,
-                include_promotions=include_promotions
+                include_promotions=include_promotions,
+                include_pawn_forks=include_pawn_forks
             )
+
+            if pending_pawn_fork is not None:
+                response_moves = self._get_pawn_fork_response_moves(board, pending_pawn_fork)
+                if response_moves:
+                    seen_moves = {move for move in moves_to_search}
+                    for move in response_moves:
+                        if move not in seen_moves:
+                            moves_to_search.append(move)
+                            seen_moves.add(move)
             
             if not moves_to_search:
                 # If not in check and no captures/checks, return stand pat
@@ -1828,17 +1907,28 @@ class MinimaxEngine(Engine):
             # Record move being considered for visualization
             self.visualizer.record_move_considered(move, board)
             
+            child_pending_pawn_fork = None
+            if include_pawn_forks:
+                child_pending_pawn_fork = self._get_pawn_fork_info(board, move)
+
             # Make the move
-            board.push(move)
+            self._push_with_repetition_tracking(board, move)
             # Recursively search the resulting position
-            score, line, status = self._quiescence(board, alpha, beta, depth + 1, game_stage)
+            score, line, status = self._quiescence(
+                board,
+                alpha,
+                beta,
+                depth + 1,
+                game_stage,
+                pending_pawn_fork=child_pending_pawn_fork,
+            )
             
             # If search was partial, propagate up immediately
             if status == SearchStatus.PARTIAL:
-                board.pop()
+                self._pop_with_repetition_tracking(board)
                 return None, [], SearchStatus.PARTIAL
             # Undo the move
-            board.pop()
+            self._pop_with_repetition_tracking(board)
             
             if board.turn:  # White to move: maximize
                 if score > alpha:
@@ -2482,19 +2572,122 @@ class MinimaxEngine(Engine):
                 self.logger.log(f"⚠️  Tablebase error: {e}")
             return None 
 
+    def _get_piece_value(self, piece_type):
+        """Get a cached material value for the given piece type."""
+        return self.search_piece_values.get(piece_type, 0)
+
+    def _get_pawn_fork_info(self, board, move):
+        """
+        Return metadata for a materially meaningful quiet pawn fork, or None.
+
+        The detector is intentionally narrow:
+        - legal one-square non-capturing pawn pushes only
+        - fork must attack at least two enemy non-pawn pieces
+        - score is the smaller of the top two attacked target values
+        - reject trivially unsound forks where the advanced pawn is immediately loose
+        """
+        if board.is_capture(move) or move.promotion:
+            return None
+
+        piece = board.piece_at(move.from_square)
+        if piece is None or piece.color != board.turn or piece.piece_type != chess.PAWN:
+            return None
+
+        rank_delta = chess.square_rank(move.to_square) - chess.square_rank(move.from_square)
+        if abs(rank_delta) != 1:
+            return None
+
+        moving_color = board.turn
+        enemy_color = not moving_color
+
+        board.push(move)
+        try:
+            if board.is_check():
+                return None
+
+            enemy_attackers = len(board.attackers(enemy_color, move.to_square))
+            friendly_defenders = len(board.attackers(moving_color, move.to_square))
+            if enemy_attackers > friendly_defenders:
+                return None
+
+            attacked_targets = []
+            for target_square in board.attacks(move.to_square):
+                target_piece = board.piece_at(target_square)
+                if target_piece is None or target_piece.color != enemy_color or target_piece.piece_type == chess.KING:
+                    continue
+
+                target_value = self._get_piece_value(target_piece.piece_type)
+                if target_value < self._get_piece_value(chess.KNIGHT):
+                    continue
+
+                attacked_targets.append((target_value, target_square))
+
+            if len(attacked_targets) < 2:
+                return None
+
+            attacked_targets.sort(reverse=True)
+            top_targets = attacked_targets[:2]
+            fork_score = top_targets[1][0]
+
+            return {
+                "fork_square": move.to_square,
+                "target_squares": tuple(target_square for _, target_square in top_targets),
+                "score": fork_score,
+            }
+        finally:
+            board.pop()
+
+    def _get_quiescence_pawn_fork_moves(self, board, legal_moves):
+        """Return up to two quiet pawn-fork moves ordered by material significance."""
+        fork_candidates = []
+
+        for move in legal_moves:
+            fork_info = self._get_pawn_fork_info(board, move)
+            if fork_info is None:
+                continue
+
+            fork_candidates.append((fork_info["score"], move))
+
+        fork_candidates.sort(key=lambda item: item[0], reverse=True)
+        return [move for _, move in fork_candidates[:2]]
+
+    def _get_pawn_fork_response_moves(self, board, pending_pawn_fork):
+        """
+        Generate direct defensive replies to an active pawn fork.
+
+        Keep this set narrow:
+        - capture the forking pawn
+        - move one of the forked pieces
+        """
+        fork_square = pending_pawn_fork["fork_square"]
+        target_squares = set(pending_pawn_fork["target_squares"])
+        response_moves = []
+
+        for move in board.legal_moves:
+            if board.is_capture(move) and move.to_square == fork_square:
+                response_moves.append(move)
+                continue
+
+            if move.from_square in target_squares:
+                response_moves.append(move)
+
+        return response_moves
+
     def _get_quiescence_moves(self, board, include_captures=True, include_checks=False, 
-                               include_promotions=False):
+                               include_promotions=False, include_pawn_forks=False):
         """
         Get moves to search in quiescence, ordered by priority:
         1. Promotions (highest priority)
         2. Captures (ordered by MVV-LVA)
         3. Checks
+        4. Quiet pawn forks
         
         Args:
             board: Current board state
             include_captures: Whether to include captures
             include_checks: Whether to include checks
             include_promotions: Whether to include promotion moves
+            include_pawn_forks: Whether to include capped quiet pawn-fork moves
             
         Returns:
             List of moves to search in quiescence, ordered by priority
@@ -2513,7 +2706,7 @@ class MinimaxEngine(Engine):
         
         # Optimization: if only captures are needed (and no promotions), use the faster generate_legal_captures()
         # If promotions are possible, we need to generate all legal moves anyway, so this optimization doesn't apply
-        if include_captures and not include_checks and not has_promotions:
+        if include_captures and not include_checks and not has_promotions and not include_pawn_forks:
             captures = list(board.generate_legal_captures())
             # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
             captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
@@ -2526,6 +2719,7 @@ class MinimaxEngine(Engine):
         # Categorize moves by type
         captures = []
         checks = []
+        pawn_forks = []
         
         for move in legal_moves:
             # Skip promotions if we already collected them separately
@@ -2541,12 +2735,15 @@ class MinimaxEngine(Engine):
                 # Check if this non-capture move gives check
                 if include_checks and board.gives_check(move):
                     checks.append(move)
+
+        if include_pawn_forks:
+            pawn_forks = self._get_quiescence_pawn_fork_moves(board, legal_moves)
         
         # Order captures by MVV-LVA (Most Valuable Victim - Least Valuable Attacker)
         captures.sort(key=lambda move: self._get_capture_value(board, move), reverse=True)
         
-        # Combine moves in priority order: promotions first, then captures, then checks
-        moves_to_search = promotions + captures + checks
+        # Combine moves in priority order: promotions first, then captures, then checks, then pawn forks
+        moves_to_search = promotions + captures + checks + pawn_forks
         
         return moves_to_search
     

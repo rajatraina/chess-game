@@ -159,6 +159,54 @@ class TestMustFindMoves(unittest.TestCase):
                 self.assertFalse(is_mate, f"False mate detected for PV {san_line}")
                 self.assertIsNone(distance)
 
+    def test_engine_avoids_immediate_threefold_when_opponent_can_claim_draw(self):
+        """Regression test for losing a winning endgame by allowing an immediate threefold claim."""
+        board = chess.Board("8/8/8/2p2p2/5R2/p5rP/4k3/7K b - - 0 50")
+        for san in ["a2", "Ra4", "Kf1", "Rf4+", "Ke2", "Ra4", "Kf1", "Rf4+", "Ke2", "Ra4"]:
+            board.push(board.parse_san(san))
+
+        self.assertEqual(board.fen(), "8/8/8/2p2p2/R7/6rP/p3k3/7K b - - 9 55")
+
+        repetition_move = board.parse_san("Kf1")
+        board.push(repetition_move)
+        self.assertTrue(board.is_repetition(3))
+        board.pop()
+
+        best_move = self.engine.get_move(board, time_budget=0.5)
+        best_move_san = board.san(best_move)
+
+        self.assertNotEqual(best_move_san, "Kf1")
+
+        board.push(best_move)
+        self.assertFalse(board.is_repetition(3), f"Engine still chose immediate repetition with {best_move_san}")
+        board.pop()
+
+    def test_repetition_avoidance_survives_repeated_searches_with_same_engine(self):
+        """Regression test for TT/history contamination across multiple searches in the same game."""
+        engine = MinimaxEngine(depth=4, quiet=True)
+        engine.opening_book = None
+        engine.tablebase = None
+
+        board = chess.Board("8/8/8/2p2p2/R7/6rP/p7/4k2K b - - 1 51")
+
+        engine.get_move(board, time_budget=0.5)
+        for san in ["Kf1", "Rf4+", "Ke2", "Ra4"]:
+            board.push(board.parse_san(san))
+
+        engine.get_move(board, time_budget=0.5)
+        for san in ["Kf1", "Rf4+", "Ke2", "Ra4"]:
+            board.push(board.parse_san(san))
+
+        self.assertEqual(board.fen(), "8/8/8/2p2p2/R7/6rP/p3k3/7K b - - 9 55")
+
+        repetition_move = board.parse_san("Kf1")
+        board.push(repetition_move)
+        self.assertTrue(board.is_repetition(3))
+        board.pop()
+
+        best_move = engine.get_move(board, time_budget=0.5)
+        self.assertNotEqual(board.san(best_move), "Kf1")
+
 def run_tests():
     """Run the tests and return results"""
     print("Running expected moves tests...")

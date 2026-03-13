@@ -175,6 +175,15 @@ class PygameChessGUI:
         print("♟️ Pawn Advancement Test Position: Human (White) vs Computer (Black)")
         print("🎯 Goal: Test if the computer chooses pawn advancement moves (f6, h5) over other moves!")
         print("📋 FEN: 8/5p1p/1p5p/1P3n2/5k2/2K5/6r1/1B6 b - - 13 51")
+
+    def setup_black_repetition_avoidance_mode(self):
+        """Set up the reported winning endgame where Black must avoid immediate repetition."""
+        fen = "8/8/8/2p2p2/R7/6rP/p7/4k2K b - - 1 51"
+        self.board.board = chess.Board(fen)
+
+        print("♟️ Black Repetition Avoidance Test: Human (White) vs Computer (Black)")
+        print("🎯 Goal: Verify Black avoids the immediate repetition draw from a winning position")
+        print(f"📋 FEN: {fen}")
     
     def draw_board(self):
         # Draw board squares
@@ -232,7 +241,7 @@ class PygameChessGUI:
         return None
     
     def make_computer_move(self):
-        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "checkmate_as_white", "computer_vs_computer", "pawn_advancement_test"]:
+        if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "checkmate_as_white", "computer_vs_computer", "pawn_advancement_test", "black_repetition_avoidance"]:
             chess_board = self.board.get_board()
             if not chess_board.is_game_over():
                 # Track nodes for computer vs computer mode
@@ -241,7 +250,7 @@ class PygameChessGUI:
                     print(f"🤖 Computer vs Computer: {'White' if chess_board.turn else 'Black'} to move")
                 
                 # Disable opening book for pawn advancement test mode to avoid crashes
-                disable_opening_book = (self.game_mode == "pawn_advancement_test")
+                disable_opening_book = self.game_mode in ["pawn_advancement_test", "black_repetition_avoidance"]
                 move = self.engine.get_move(chess_board, time_budget=self.time_budget, disable_opening_book=disable_opening_book)
                 
                 if move:
@@ -360,7 +369,7 @@ class PygameChessGUI:
                     self.show_game_over()
                 else:
                     # Make computer move if in computer mode
-                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "checkmate_as_white", "pawn_advancement_test"]:
+                    if self.game_mode in ["human_vs_computer", "computer_vs_human", "checkmate_defense", "checkmate_as_white", "pawn_advancement_test", "black_repetition_avoidance"]:
                         pygame.time.wait(500)
                         self.make_computer_move()
             else:
@@ -389,6 +398,8 @@ class PygameChessGUI:
             self.setup_checkmate_as_white_mode()
         elif self.game_mode == "pawn_advancement_test":
             self.setup_pawn_advancement_test_mode()
+        elif self.game_mode == "black_repetition_avoidance":
+            self.setup_black_repetition_avoidance_mode()
         
         self.draw_board()
         
@@ -408,6 +419,10 @@ class PygameChessGUI:
             pygame.time.wait(1000)
             self.make_computer_move()
         elif self.game_mode == "pawn_advancement_test":
+            # Computer plays Black and should make the first move
+            pygame.time.wait(1000)
+            self.make_computer_move()
+        elif self.game_mode == "black_repetition_avoidance":
             # Computer plays Black and should make the first move
             pygame.time.wait(1000)
             self.make_computer_move()
@@ -444,6 +459,12 @@ class PygameChessGUI:
             print("• Watch if the computer chooses pawn advancement moves (f6, h5)")
             print("• This tests the fixed coordinate system for piece-square tables")
             print("• The computer should prefer pawn moves over other moves in this position")
+        elif mode == "black_repetition_avoidance":
+            print("\n♟️ Black Repetition Avoidance Test Instructions:")
+            print("• You play as White")
+            print("• Computer plays as Black")
+            print("• The game starts from the reported winning endgame")
+            print("• Black moves first and should avoid the immediate repetition draw")
         
         # Print special instructions for computer vs computer mode
         elif mode == "computer_vs_computer":
@@ -492,6 +513,9 @@ class PygameChessGUI:
         elif command == '7':
             print("♔ Switching to Checkmate as White mode...")
             self.set_game_mode("checkmate_as_white")
+        elif command == '8':
+            print("♟️ Switching to Black Repetition Avoidance Test...")
+            self.set_game_mode("black_repetition_avoidance")
         elif command == 'EVAL':
             info = self.engine.get_evaluator_info()
             print(f"🧠 Current Evaluator: {info['name']}")
@@ -505,7 +529,7 @@ class PygameChessGUI:
             self.running = False
         else:
             print(f"❓ Unknown command: {command}")
-            print("Available commands: N, 1, 2, 3, 4, 5, 6, EVAL, SWITCH_EVAL, ESC")
+            print("Available commands: N, 1, 2, 3, 4, 5, 6, 7, 8, EVAL, SWITCH_EVAL, ESC")
     
     def run(self):
         print("Starting Pygame Chess...")
@@ -519,6 +543,7 @@ class PygameChessGUI:
         print("  5: Computer vs Computer")
         print("  6: Pawn Advancement Test Position")
         print("  7: Checkmate as White")
+        print("  8: Black Repetition Avoidance Test")
         print("  E: Show current evaluator info")
         print("  ESC: Quit")
         print("\n💡 Tip: You can type commands in the terminal or use the Pygame window!")
@@ -551,6 +576,8 @@ class PygameChessGUI:
                         self.set_game_mode("pawn_advancement_test")
                     elif event.key == pygame.K_7:
                         self.set_game_mode("checkmate_as_white")
+                    elif event.key == pygame.K_8:
+                        self.set_game_mode("black_repetition_avoidance")
                     elif event.key == pygame.K_e:
                         info = self.engine.get_evaluator_info()
                         print(f"🧠 Current Evaluator: {info['name']}")

@@ -101,10 +101,15 @@ if __name__ == "__main__":
         if args.no_opening_book:
             print("🚫 Opening book disabled")
             print("")
-        
+
         print("")
         print("🚀 Starting chess application...")
         print("=" * 40)
         
-        app = PygameChessGUI(time_budget=args.time_budget, nnue_model_path=nnue_model_path, nnue_config_path=nnue_config_path, disable_opening_book=args.no_opening_book)
+        app = PygameChessGUI(
+            time_budget=args.time_budget,
+            nnue_model_path=nnue_model_path,
+            nnue_config_path=nnue_config_path,
+            disable_opening_book=args.no_opening_book,
+        )
         app.run() 

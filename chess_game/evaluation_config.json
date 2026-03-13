@@ -58,6 +58,7 @@
     "quiescence_additional_depth_limit_captures": 8,
     "quiescence_additional_depth_limit_checks": 2,
     "quiescence_additional_depth_limit_promotions": 2,
+    "quiescence_additional_depth_limit_pawn_forks": 1,
     "quiescence_include_checks": true,
     "moveorder_shallow_search_depth": 2,
     "kingside_castling_bonus": 50,
