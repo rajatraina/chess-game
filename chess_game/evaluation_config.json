@@ -75,7 +75,7 @@
     "search_visualization_enabled": false,
     "search_visualization_target_fen": null,
     "transposition_table_enabled": true,
-    "transposition_table_entries": 65536,
+    "transposition_table_entries": 1048576,
     "transposition_table_bucket_size": 2,
     "transposition_table_store_min_depth": 2,
     "pvs_enabled": true,
