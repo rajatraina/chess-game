@@ -1,173 +1,100 @@
-# Chess NNUE Trainer
+# NNUE Training CLI Steps
 
-This directory contains a complete NNUE (Efficiently Updatable Neural Networks) training system for chess position evaluation. NNUE models are much simpler and more interpretable than transformer-based approaches.
+This README is only the command-line workflow to train an NNUE model.
 
-## Features
-
-- **NNUE Architecture**: Uses piece-square table features instead of complex neural networks
-- **Efficient Data Loading**: Streams data from compressed `.zst` files with batch processing
-- **White-Oriented Semantics**: Uses White-perspective targets and fixed White-oriented features
-- **CP regression**: White-perspective centipawn targets (mate-scored Lichess rows skipped); SmoothL1 or MSE loss
-- **Simple and Fast**: Much faster training and inference than transformer models
-- **Interpretable**: Piece-square table features are easy to understand and debug
-- **PyTorch Integration**: Full PyTorch training pipeline with validation and checkpointing
-
-## Architecture
-
-The NNUE model uses a simple but effective architecture:
-
-1. **Feature Extraction**: Converts chess position to fixed White-oriented piece-square features plus castling, counts, and side-to-move
-2. **Hidden Layers**: 2-3 fully connected layers with ReLU activation
-3. **Output**: Single scalar (predicts `clamp(cp) / cp_target_scale`; engine multiplies by `cp_target_scale` for centipawns)
-4. **Training**: Clamped labels + optional scale; `smooth_l1` (Huber) or `mse` — see `nnue` section in `config_nnue.yaml`
-
-**Checkpoint note:** Models trained with the old sigmoid + BCE head are **not** compatible; retrain from scratch.
-
-## Data Format
-
-The trainer expects training data in the following JSON format (one position per line):
-
-```json
-{
-  "fen": "7r/1p3k2/p1bPR3/5p2/2B2P1p/8/PP4P1/3K4 b - -",
-  "evals": [
-    {
-      "pvs": [
-        {
-          "cp": 48,
-          "line": "f7g7 e6e2 h8d8 e2d2 b7b5 c4b3 a6a5 a2a3 g7f6 b3a2"
-        }
-      ],
-      "knodes": 644403,
-      "depth": 55
-    }
-  ]
-}
-```
-
-## Quick Start
-
-### 1. Install Dependencies
+## 0) Install dependencies
 
 ```bash
-pip install torch zstandard
+pip install torch zstandard pyyaml python-chess numpy
 ```
 
-### 2. Train with Configuration File
+## 1) Split raw eval file into train/val
+
+If you only have one large file (example: `trainer/localdata/lichess_db_eval.jsonl.zst`), split it:
 
 ```bash
-# Use default config file
-python3 trainer/train_nnue.py
-
-# Use custom config file
-python3 trainer/train_nnue.py --config my_experiment_config.yaml
-
-# With custom save directory
-python3 trainer/train_nnue.py --config config_nnue.yaml --save-dir my_nnue_checkpoints
+python3 trainer/split_data.py \
+  --input trainer/localdata/lichess_db_eval.jsonl.zst \
+  --val-size 1000000 \
+  --val-output trainer/localdata/lichess_db_eval.val.1M.jsonl.zst \
+  --train-output trainer/localdata/lichess_db_eval.train.jsonl.zst
 ```
 
-### 3. Resume Training
+## 2) Convert JSONL.ZST to compact `.features` (recommended)
+
+Convert train:
+
+```bash
+python3 trainer/convert_eval_to_features.py \
+  --input trainer/localdata/lichess_db_eval.train.jsonl.zst \
+  --output trainer/localdata/lichess_db_eval.train.features \
+  --progress-every 1000000
+```
+
+Convert val:
+
+```bash
+python3 trainer/convert_eval_to_features.py \
+  --input trainer/localdata/lichess_db_eval.val.1M.jsonl.zst \
+  --output trainer/localdata/lichess_db_eval.val.1M.features \
+  --progress-every 200000
+```
+
+Notes:
+- The converter prints running stats: `seen`, `kept`, `filtered`, `json_errors`, keep rate, speed.
+- `.features` is binary, so do not use `wc -l` to count samples.
+
+## 3) Point config to `.features` files
+
+Edit `trainer/config_nnue.yaml`:
+
+```yaml
+data:
+  train_file: "trainer/localdata/lichess_db_eval.train.features"
+  val_file: "trainer/localdata/lichess_db_eval.val.1M.features"
+```
+
+## 4) Start training
+
+```bash
+python3 trainer/train_nnue.py --config trainer/config_nnue.yaml
+```
+
+Optional overrides:
 
 ```bash
 python3 trainer/train_nnue.py \
-    --config config_nnue.yaml \
-    --resume checkpoints_nnue/best_model.pth
+  --config trainer/config_nnue.yaml \
+  --save-dir checkpoints_nnue \
+  --device auto
 ```
 
-## Configuration Examples
-
-### Default Configuration
-The `config_nnue.yaml` file contains a balanced configuration:
-- 256 hidden size, 2 layers
-- 64 batch size, 0.001 learning rate, 50 epochs
-- 1M max training positions
-- Uses complete validation set
-
-## Creating Custom Configurations
-
-For different experiments, create new config files:
+## 5) Resume from checkpoint
 
 ```bash
-# Copy the default config
-cp config_nnue.yaml my_experiment.yaml
-
-# Edit my_experiment.yaml with your changes
-# Then run:
-python3 trainer/train_nnue.py --config my_experiment.yaml
+python3 trainer/train_nnue.py \
+  --config trainer/config_nnue.yaml \
+  --resume checkpoints_nnue/best_model.pth
 ```
 
-The config file contains all settings:
-- Model architecture (hidden size, layers, dropout)
-- Training parameters (batch size, learning rate, epochs)
-- Data loading settings (file paths, workers, memory)
-- Hardware configuration (device, mixed precision)
+## End-to-end example
 
-## Model Integration
+```bash
+python3 trainer/split_data.py \
+  --input trainer/localdata/lichess_db_eval.jsonl.zst \
+  --val-size 1000000 \
+  --val-output trainer/localdata/lichess_db_eval.val.1M.jsonl.zst \
+  --train-output trainer/localdata/lichess_db_eval.train.jsonl.zst
 
-The trained NNUE model can be integrated with the existing chess engine:
+python3 trainer/convert_eval_to_features.py \
+  --input trainer/localdata/lichess_db_eval.train.jsonl.zst \
+  --output trainer/localdata/lichess_db_eval.train.features \
+  --progress-every 1000000
 
-```python
-from trainer.nnue_model import create_nnue_model
-from trainer.nnue_trainer import NNUETrainer
-import torch
+python3 trainer/convert_eval_to_features.py \
+  --input trainer/localdata/lichess_db_eval.val.1M.jsonl.zst \
+  --output trainer/localdata/lichess_db_eval.val.1M.features \
+  --progress-every 200000
 
-# Load trained NNUE model
-model = create_nnue_model(config['model'])
-trainer = NNUETrainer(model)
-trainer.load_model('checkpoints_nnue/best_model.pth')
-
-# Raw network output (multiply by nnue.cp_target_scale for centipawns, same as engine)
-from trainer.nnue_model import NNUEFeatureExtractor
-board = chess.Board()
-features = NNUEFeatureExtractor().board_to_features(board)
-features_tensor = torch.from_numpy(features).float().unsqueeze(0)
-cp_units = model(features_tensor).item()
+python3 trainer/train_nnue.py --config trainer/config_nnue.yaml
 ```
-
-## File Structure
-
-```
-trainer/
-├── __init__.py              # Package initialization
-├── nnue_model.py           # NNUE model architecture
-├── nnue_trainer.py         # NNUE training loop and utilities
-├── nnue_data_loader.py     # NNUE data loading and preprocessing
-├── train_nnue.py           # Main NNUE training script
-├── config_nnue.yaml        # NNUE configuration file
-├── README.md               # This file
-└── localdata/              # Training data directory
-    ├── lichess_db_eval.train.jsonl.zst
-    └── lichess_db_eval.val.jsonl.zst
-```
-
-## Training Tips
-
-1. **Start Small**: Use the `small` preset for initial experiments
-2. **Monitor Validation**: Watch for overfitting with validation loss
-3. **Adjust Learning Rate**: Lower for stable training, higher for faster convergence
-4. **Batch Size**: Larger batches for stability, smaller for memory constraints
-5. **Data Size**: Start with limited data for faster iterations
-6. **NNUE Benefits**: Much faster training and inference than transformer models
-
-## Hardware Requirements
-
-- **CPU**: Multi-core recommended for data loading
-- **RAM**: 8GB+ recommended for large datasets
-- **GPU**: CUDA/MPS support for faster training (optional)
-- **Storage**: SSD recommended for data loading performance
-
-## Troubleshooting
-
-### Common Issues
-
-1. **Out of Memory**: Reduce batch size or use smaller model
-2. **Slow Training**: Increase `num_workers` or use GPU
-3. **Poor Convergence**: Lower learning rate or check data quality
-4. **Data Loading Errors**: Verify `.zst` file format and permissions
-
-### Performance Optimization
-
-1. Use GPU if available (`--device cuda`)
-2. Increase `num_workers` for faster data loading
-3. Use `pin_memory=True` for GPU training
-4. Consider mixed precision training for large models
