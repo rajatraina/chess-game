@@ -1,9 +1,9 @@
 """
 NNUE Chess Position Evaluator
 
-This module provides NNUE (Efficiently Updatable Neural Network) based evaluation 
-for chess positions. NNUE is a simple, fast, and interpretable approach to 
-chess position evaluation using piece-square table features.
+This module provides NNUE-based evaluation: a regression head outputs a scalar
+that is scaled to White-perspective centipawns (see nnue.cp_target_scale in YAML).
+Mate is handled in search, not in the network label.
 
 Author: Chess Engine Team
 """
@@ -48,6 +48,9 @@ class NeuralNetworkEvaluator(BaseEvaluator):
         self.model_path = model_path
         self.config_path = config_path
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Training uses regression target = clamp(cp) / cp_target_scale; inference multiplies back.
+        self.cp_target_scale = 1.0
+        self.nnue_objective = "cp_regression"
         # Use canonical feature extractor from trainer module
         self.feature_extractor = NNUEFeatureExtractor()
         
@@ -88,8 +91,6 @@ class NeuralNetworkEvaluator(BaseEvaluator):
             "quiescence_additional_depth_limit_promotions": 2,
             "quiescence_include_checks": True,
             "moveorder_shallow_search_depth": 2,
-            "search_visualization_enabled": False,
-            "search_visualization_target_fen": None,
             "opening_book": {
                 "enabled": True,
                 "file_path": "opening_book.txt",
@@ -126,7 +127,7 @@ class NeuralNetworkEvaluator(BaseEvaluator):
         if self.model_path and os.path.exists(self.model_path):
             try:
                 print(f"🤖 Loading NNUE model from {self.model_path}")
-                checkpoint = torch.load(self.model_path, map_location=self.device)
+                checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
                 
                 # Load model config from YAML file if provided, otherwise use defaults
                 model_config = {
@@ -141,6 +142,10 @@ class NeuralNetworkEvaluator(BaseEvaluator):
                             if 'model' in config:
                                 model_config['hidden_sizes'] = config['model'].get('hidden_sizes', [256, 32])
                                 model_config['dropout'] = config['model'].get('dropout', 0.1)
+                            if 'nnue' in config:
+                                n = config['nnue']
+                                self.nnue_objective = str(n.get('objective', 'cp_regression'))
+                                self.cp_target_scale = float(n.get('cp_target_scale', 1.0))
                         print(f"📋 Loaded model architecture from config: {model_config}")
                     except Exception as e:
                         print(f"⚠️  Could not load config file {self.config_path}: {e}")
@@ -169,7 +174,7 @@ class NeuralNetworkEvaluator(BaseEvaluator):
             board: Chess board state
             
         Returns:
-            Feature vector of shape (782,) for NNUE input
+            Feature vector of shape (783,) for NNUE input
         """
         return self.feature_extractor.board_to_features(board)
     
@@ -179,10 +184,10 @@ class NeuralNetworkEvaluator(BaseEvaluator):
         Run NNUE inference on the feature tensor.
         
         Args:
-            features: Feature vector of shape (782,)
+            features: Feature vector of shape (783,)
             
         Returns:
-            Evaluation score from NNUE model
+            White-perspective centipawn-like score from regression head (scaled by cp_target_scale)
         """
         if self.model is None:
             return None
@@ -190,8 +195,11 @@ class NeuralNetworkEvaluator(BaseEvaluator):
         try:
             features_tensor = torch.from_numpy(features).float().unsqueeze(0).to(self.device)
             with torch.no_grad():
-                prediction = self.model(features_tensor)
-                return float(prediction.cpu().item())
+                raw = float(self.model(features_tensor).cpu().item())
+                scale = float(self.cp_target_scale) if self.cp_target_scale else 1.0
+                if scale <= 0:
+                    scale = 1.0
+                return float(raw * scale)
             
         except Exception as e:
             print(f"⚠️  NNUE inference failed: {e}")

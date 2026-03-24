@@ -72,8 +72,6 @@
     "pawn_structure_weight": 0.1,
     "pawn_islands_bonus": 10,
     "passed_pawn_bonus": 50,
-    "search_visualization_enabled": false,
-    "search_visualization_target_fen": null,
     "transposition_table_enabled": true,
     "transposition_table_entries": 1048576,
     "transposition_table_bucket_size": 2,

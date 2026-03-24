@@ -6,7 +6,8 @@ This directory contains a complete NNUE (Efficiently Updatable Neural Networks) 
 
 - **NNUE Architecture**: Uses piece-square table features instead of complex neural networks
 - **Efficient Data Loading**: Streams data from compressed `.zst` files with batch processing
-- **Centipawn Evaluation**: Directly predicts centipawn values for position evaluation
+- **White-Oriented Semantics**: Uses White-perspective targets and fixed White-oriented features
+- **CP regression**: White-perspective centipawn targets (mate-scored Lichess rows skipped); SmoothL1 or MSE loss
 - **Simple and Fast**: Much faster training and inference than transformer models
 - **Interpretable**: Piece-square table features are easy to understand and debug
 - **PyTorch Integration**: Full PyTorch training pipeline with validation and checkpointing
@@ -15,10 +16,12 @@ This directory contains a complete NNUE (Efficiently Updatable Neural Networks) 
 
 The NNUE model uses a simple but effective architecture:
 
-1. **Feature Extraction**: Converts chess position to piece-square table features (768 features)
+1. **Feature Extraction**: Converts chess position to fixed White-oriented piece-square features plus castling, counts, and side-to-move
 2. **Hidden Layers**: 2-3 fully connected layers with ReLU activation
-3. **Output**: Single centipawn evaluation value
-4. **Training**: MSE loss for centipawn prediction
+3. **Output**: Single scalar (predicts `clamp(cp) / cp_target_scale`; engine multiplies by `cp_target_scale` for centipawns)
+4. **Training**: Clamped labels + optional scale; `smooth_l1` (Huber) or `mse` — see `nnue` section in `config_nnue.yaml`
+
+**Checkpoint note:** Models trained with the old sigmoid + BCE head are **not** compatible; retrain from scratch.
 
 ## Data Format
 
@@ -113,11 +116,12 @@ model = create_nnue_model(config['model'])
 trainer = NNUETrainer(model)
 trainer.load_model('checkpoints_nnue/best_model.pth')
 
-# Use for evaluation
+# Raw network output (multiply by nnue.cp_target_scale for centipawns, same as engine)
+from trainer.nnue_model import NNUEFeatureExtractor
 board = chess.Board()
-features = trainer.feature_extractor._board_to_features(board)
+features = NNUEFeatureExtractor().board_to_features(board)
 features_tensor = torch.from_numpy(features).float().unsqueeze(0)
-centipawn_eval = model(features_tensor).item()
+cp_units = model(features_tensor).item()
 ```
 
 ## File Structure

@@ -10,12 +10,10 @@ from dataclasses import dataclass
 try:
     from .evaluation import EvaluationManager, create_evaluator
     from .logging_manager import get_logger
-    from .search_visualizer import get_visualizer, get_noop_visualizer, configure_visualizer
     from .opening_book import OpeningBook, OpeningBookError
 except ImportError:
     from evaluation import EvaluationManager, create_evaluator
     from logging_manager import get_logger
-    from search_visualizer import get_visualizer, get_noop_visualizer, configure_visualizer
     from opening_book import OpeningBook, OpeningBookError
 
 # IMPORTANT: All logging must use self.logger methods, never print() statements.
@@ -158,22 +156,9 @@ class MinimaxEngine(Engine):
             chess.QUEEN: piece_values.get("queen", 990),
         }
         
-        # Initialize search visualizer
-        self.viz_enabled = self.evaluation_manager.evaluator.config.get("search_visualization_enabled", False)
-        viz_target_fen = self.evaluation_manager.evaluator.config.get("search_visualization_target_fen", None)
-        
-        if self.viz_enabled:
-            self.visualizer = get_visualizer()
-            configure_visualizer(self.viz_enabled, viz_target_fen)
-        else:
-            self.visualizer = get_noop_visualizer()
-        
         # Initialize opening book
         self.opening_book = None
         self.init_opening_book()
-        
-        # Move counter for visualization
-        self.move_counter = 0
         
         # Cache hot-path config values used inside recursive search loops
         self.checkmate_bonus = self.evaluation_manager.evaluator.config.get("checkmate_bonus", 100000)
@@ -539,10 +524,6 @@ class MinimaxEngine(Engine):
         """
         # Count this node
         self.nodes_searched += 1
-
-        if self._is_threefold_repetition_position(board):
-            self.visualizer.exit_node(self.repetition_eval, "REPETITION", [], 0, 0)
-            return self.repetition_eval, [], SearchStatus.COMPLETE
 
         if self._is_threefold_repetition_position(board):
             return self.repetition_eval, [], SearchStatus.COMPLETE
@@ -1033,9 +1014,6 @@ class MinimaxEngine(Engine):
             move_evaluations = []  # Track move evaluations for logging only
             moves_that_were_best = []  # Track all moves that were best at any point during this iteration
             
-            # Start search visualization for this iteration
-            self.visualizer.start_search(board, current_depth)
-            
             # Evaluate moves in optimal order
             if iteration > 1 and previous_iteration_best_moves and previous_iteration_move_order:
                 # Use reverse order of best moves from previous iteration
@@ -1058,9 +1036,6 @@ class MinimaxEngine(Engine):
                         self.logger.log_iterative_deepening_timeout(current_depth, elapsed_time, time_budget)
                         self.search_interrupted = True
                         break
-                
-                # Record move being considered for visualization
-                self.visualizer.record_move_considered(move, board)
                 
                 # Store the original turn before making the move
                 original_turn = board.turn
@@ -1296,19 +1271,6 @@ class MinimaxEngine(Engine):
         if not best_move:
             return
         
-        # Finish search visualization if enabled
-        if self.viz_enabled:
-            pv_san = self._line_to_san(board, best_line)
-            self.visualizer.finish_search(self._move_to_san(board, best_move), best_value, self.nodes_searched, search_time, pv_san)
-        else:
-            self.visualizer.finish_search("", best_value, self.nodes_searched, search_time, [])
-        
-        # Export visualization to file
-        self.move_counter += 1
-        viz_file = self.visualizer.export_tree_to_file(self.move_counter)
-        if viz_file:
-            self.logger.log_info(f"Search tree exported to: {viz_file}")
-        
         # Print the best move found with component evaluation
         pv_san = self._line_to_san(board, best_line)
 
@@ -1347,9 +1309,6 @@ class MinimaxEngine(Engine):
         alpha_orig = alpha
         beta_orig = beta
 
-        # Enter node for visualization
-        self.visualizer.enter_node(board, None, depth, alpha, beta, False)
-        
         # Count this node
         self.nodes_searched += 1
         
@@ -1362,7 +1321,6 @@ class MinimaxEngine(Engine):
                 
                 if elapsed_time >= time_budget - self.time_budget_safety_margin:
                     # Return partial status - search timed out
-                    self.visualizer.exit_node(None, "TIMEOUT", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
         
         # Leaf node: evaluate position
@@ -1407,9 +1365,6 @@ class MinimaxEngine(Engine):
                     # Fall back to quiescence if tablebase lookup fails
                     pass
 
-            # Enter quiescence node for visualization
-            self.visualizer.enter_node(board, None, 0, alpha, beta, True)
-            
             # Perform quiescence search
             # Start quiescence depth at 0 (quiescence depth, not total depth)
             eval_score, line, status = self._quiescence(board, alpha, beta, 0, game_stage)
@@ -1421,9 +1376,6 @@ class MinimaxEngine(Engine):
                 if not self._line_ends_in_checkmate(board, line):
                     eval_score = self.evaluate(board, game_stage)
                     line = []
-            
-            # Exit quiescence node for visualization
-            self.visualizer.exit_node(eval_score, "QUIESCENCE", line if line else [], 0, 0)
             
             return eval_score, line, status
         
@@ -1443,8 +1395,6 @@ class MinimaxEngine(Engine):
                 # Other game over conditions
                 eval_score = self.evaluate(board, game_stage)
             
-            # Exit node for visualization
-            self.visualizer.exit_node(eval_score, "TERMINAL", [], 0, 0)
             return eval_score, [], SearchStatus.COMPLETE
         
         tt_move = None
@@ -1455,13 +1405,11 @@ class MinimaxEngine(Engine):
             tt_key_hash = hash(tt_key)
             tt_entry = self._probe_transposition_table(tt_key, tt_key_hash)
             if tt_entry is not None:
-                self.visualizer.record_tt_hit(tt_entry.depth)
                 tt_move = tt_entry.best_move
                 if tt_entry.depth >= depth:
                     if tt_entry.bound == TT_BOUND_EXACT:
                         tt_line = self._reconstruct_exact_tt_line(board, depth)
                         self.tt_cutoffs += 1
-                        self.visualizer.exit_node(tt_entry.score, "TT", [], 0, 0, tt_hit=True, tt_depth=tt_entry.depth)
                         return tt_entry.score, tt_line, SearchStatus.COMPLETE
                     if tt_entry.bound == TT_BOUND_LOWER:
                         alpha = max(alpha, tt_entry.score)
@@ -1469,7 +1417,6 @@ class MinimaxEngine(Engine):
                         beta = min(beta, tt_entry.score)
                     if alpha >= beta:
                         self.tt_cutoffs += 1
-                        self.visualizer.exit_node(tt_entry.score, "TT", [], 0, 0, tt_hit=True, tt_depth=tt_entry.depth)
                         return tt_entry.score, [], SearchStatus.COMPLETE
         
         # Use optimized move generation and sorting
@@ -1487,16 +1434,12 @@ class MinimaxEngine(Engine):
             tried_quiet_moves = []
             
             for move_index, move in enumerate(sorted_moves):
-                # Record move being considered for visualization
-                self.visualizer.record_move_considered(move, board)
-                
                 # Check time budget before processing this move
                 if (start_time and time_budget and self.time_budget_early_exit_enabled):
                     elapsed_time = time.time() - start_time
                     
                     if elapsed_time >= time_budget - self.time_budget_safety_margin:
                         # Return partial status - search timed out
-                        self.visualizer.exit_node(None, "TIMEOUT", [], 0, 0)
                         return None, [], SearchStatus.PARTIAL
                 
                 is_quiet_move = not move.promotion and not board.is_capture(move)
@@ -1546,7 +1489,6 @@ class MinimaxEngine(Engine):
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
                     self._pop_with_repetition_tracking(board)
-                    self.visualizer.exit_node(None, "PARTIAL", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
 
                 # Undo move
@@ -1587,11 +1529,6 @@ class MinimaxEngine(Engine):
                     tt_bound = TT_BOUND_EXACT
                 self._store_transposition_table(tt_key, tt_key_hash, depth, max_eval, tt_bound, best_move)
             
-            # Exit node for visualization
-            if self.viz_enabled:
-                self.visualizer.exit_node(max_eval, "EXACT", self._line_to_san(board, best_line), 0, 0)
-            else:
-                self.visualizer.exit_node(max_eval, "EXACT", [], 0, 0)
             return max_eval, best_line, SearchStatus.COMPLETE
             
         # Black's turn: minimize evaluation
@@ -1602,16 +1539,12 @@ class MinimaxEngine(Engine):
             tried_quiet_moves = []
             
             for move_index, move in enumerate(sorted_moves):
-                # Record move being considered for visualization
-                self.visualizer.record_move_considered(move, board)
-                
                 # Check time budget before processing this move
                 if (start_time and time_budget and self.time_budget_early_exit_enabled):
                     elapsed_time = time.time() - start_time
                     
                     if elapsed_time >= time_budget - self.time_budget_safety_margin:
                         # Return partial status - search timed out
-                        self.visualizer.exit_node(None, "TIMEOUT", [], 0, 0)
                         return None, [], SearchStatus.PARTIAL
                 
                 is_quiet_move = not move.promotion and not board.is_capture(move)
@@ -1661,7 +1594,6 @@ class MinimaxEngine(Engine):
                 # If search was partial, propagate up immediately
                 if status == SearchStatus.PARTIAL:
                     self._pop_with_repetition_tracking(board)
-                    self.visualizer.exit_node(None, "PARTIAL", [], 0, 0)
                     return None, [], SearchStatus.PARTIAL
 
                 # Undo move
@@ -1702,12 +1634,6 @@ class MinimaxEngine(Engine):
                     tt_bound = TT_BOUND_EXACT
                 self._store_transposition_table(tt_key, tt_key_hash, depth, min_eval, tt_bound, best_move)
             
-                    
-            # Exit node for visualization
-            if self.viz_enabled:
-                self.visualizer.exit_node(min_eval, "EXACT", self._line_to_san(board, best_line), 0, 0)
-            else:
-                self.visualizer.exit_node(min_eval, "EXACT", [], 0, 0)
             return min_eval, best_line, SearchStatus.COMPLETE
 
     def evaluate(self, board, game_stage=None):
@@ -1910,9 +1836,6 @@ class MinimaxEngine(Engine):
         original_beta = beta
         
         for move in moves_to_search:
-            # Record move being considered for visualization
-            self.visualizer.record_move_considered(move, board)
-            
             child_pending_pawn_fork = None
             if include_pawn_forks:
                 child_pending_pawn_fork = self._get_pawn_fork_info(board, move)
