@@ -9,7 +9,8 @@ This is a Python chess engine and GUI application. The main components are:
 - **Chess GUI** (`main_pygame.py`): Pygame-based graphical chess board with multiple game modes
 - **Chess Engine** (`chess_game/engine.py`): Minimax engine with alpha-beta pruning, quiescence search, opening book, and optional NNUE evaluation
 - **UCI Interface** (`uci_interface.py`): UCI protocol adapter for external GUI/online play
-- **NNUE Trainer** (`trainer/`): PyTorch training pipeline for neural network evaluation models
+- **NNUE Trainer** (`trainer/`): PyTorch training pipeline for neural network evaluation models  
+  - End-to-end CLI (split data → convert to `.features` → train): see [`trainer/README.md`](trainer/README.md). Run those commands from the repo root; training data paths typically live under `trainer/localdata/`. On macOS the README prefixes long jobs with `caffeinate -i` to prevent sleep during long conversion or training.
 - **Lichess Bot** (`lichess-bot/`): Vendored bridge for online play (requires API token)
 
 ### Running the application
