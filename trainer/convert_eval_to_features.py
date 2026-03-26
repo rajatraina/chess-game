@@ -49,6 +49,7 @@ from typing import Any, Iterator, List, Optional, Tuple
 import numpy as np
 import zstandard as zstd
 import chess
+import yaml
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -65,6 +66,44 @@ from trainer.nnue_data_loader import (
 from trainer.nnue_model import NNUEFeatureExtractor
 
 _RECORD_BYTES_OVERHEAD = 32
+
+
+def _print_scaling_safeguard(
+    cp_label_clip_min: float, cp_label_clip_max: float, cp_target_scale: float
+) -> None:
+    """Print effective scaling and warn on mismatch with trainer config."""
+    print(
+        "Target scaling: "
+        f"clip=[{float(cp_label_clip_min):g}, {float(cp_label_clip_max):g}], "
+        f"cp_target_scale={float(cp_target_scale):g}"
+    )
+    cfg_path = Path(__file__).with_name("config_nnue.yaml")
+    if not cfg_path.exists():
+        return
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        nnue = cfg.get("nnue") or {}
+        cfg_min = float(nnue.get("cp_label_clip_min", -2000.0))
+        cfg_max = float(nnue.get("cp_label_clip_max", 2000.0))
+        cfg_scale = float(nnue.get("cp_target_scale", 1.0))
+    except Exception as e:
+        print(f"Warning: could not parse {cfg_path}: {e}")
+        return
+
+    mismatch = (
+        float(cp_label_clip_min) != cfg_min
+        or float(cp_label_clip_max) != cfg_max
+        or float(cp_target_scale) != cfg_scale
+    )
+    if mismatch:
+        print(
+            "WARNING: converter scaling differs from trainer/config_nnue.yaml nnue section:\n"
+            f"  converter: clip=[{float(cp_label_clip_min):g}, {float(cp_label_clip_max):g}], "
+            f"cp_target_scale={float(cp_target_scale):g}\n"
+            f"  config:    clip=[{cfg_min:g}, {cfg_max:g}], cp_target_scale={cfg_scale:g}\n"
+            "Generated .features targets will follow converter values."
+        )
 
 
 def _iter_jsonl_lines_zst(in_path: Path, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
@@ -777,7 +816,7 @@ def main() -> None:
     parser.add_argument("--max-positions", type=int, default=None, help="Optional max kept rows")
     parser.add_argument("--cp-label-clip-min", type=float, default=-2000.0)
     parser.add_argument("--cp-label-clip-max", type=float, default=2000.0)
-    parser.add_argument("--cp-target-scale", type=float, default=1.0)
+    parser.add_argument("--cp-target-scale", type=float, default=100.0)
     parser.add_argument("--progress-every", type=int, default=100000)
     parser.add_argument(
         "--augment-color-symmetry",
@@ -798,6 +837,11 @@ def main() -> None:
         help="Zstd level for compressed output (default: 16)",
     )
     args = parser.parse_args()
+    _print_scaling_safeguard(
+        cp_label_clip_min=float(args.cp_label_clip_min),
+        cp_label_clip_max=float(args.cp_label_clip_max),
+        cp_target_scale=float(args.cp_target_scale),
+    )
 
     if args.shards:
         convert_eval_jsonl_to_features_sharded(

@@ -28,7 +28,7 @@ caffeinate -i python3 trainer/split_data.py \
 
 ### Single output file
 
-Use a `.features.zst` path (or `--compress-output true`) if you want compressed storage, matching `trainer/config_nnue.yaml` defaults.
+Use a `.features.zst` path (or `--compress-output true`) if you want compressed storage. The commands below pass `--cp-label-clip-min`, `--cp-label-clip-max`, and `--cp-target-scale` explicitly so they stay aligned with `trainer/config_nnue.yaml` (`nnue` section).
 
 Convert train:
 
@@ -36,6 +36,9 @@ Convert train:
 caffeinate -i python3 trainer/convert_eval_to_features.py \
   --input trainer/localdata/lichess_db_eval.train.jsonl.zst \
   --output trainer/localdata/lichess_db_eval.train.features.zst \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 1000000
 ```
 
@@ -45,6 +48,9 @@ Convert val:
 caffeinate -i python3 trainer/convert_eval_to_features.py \
   --input trainer/localdata/lichess_db_eval.val.1M.jsonl.zst \
   --output trainer/localdata/lichess_db_eval.val.1M.features.zst \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 200000
 ```
 
@@ -60,6 +66,9 @@ caffeinate -i python3 trainer/convert_eval_to_features.py \
   --shards trainer/localdata/lichess_db_eval.train.features_shards \
   --num-shards 200 \
   --ingest-buffer-mb 1536 \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 1000000
 ```
 
@@ -71,6 +80,9 @@ caffeinate -i python3 trainer/convert_eval_to_features.py \
   --shards trainer/localdata/lichess_db_eval.val.1M.features_shards \
   --num-shards 1 \
   --ingest-buffer-mb 512 \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 200000
 ```
 
@@ -78,6 +90,14 @@ Notes:
 - The converter prints running stats: `seen`, `kept`, `filtered`, `json_errors`, keep rate, speed.
 - `.features` / `.features.zst` is binary; do not use `wc -l` to count samples.
 - Sharded mode writes `shard_000.features.zst`, `shard_001.features.zst`, … (compressed by default). Tune `--ingest-buffer-mb` if you need a lower RAM ceiling during conversion.
+
+## Pitfalls (scaling & speed)
+
+The converter **does not read** `trainer/config_nnue.yaml`. Stored targets follow `apply_cp_regression_target` using the converter’s `--cp-label-clip-*` and `--cp-target-scale` (defaults in the script should match `nnue` in the YAML; the converter also prints them and warns on mismatch). If you change `cp_target_scale` in YAML, **reconvert** with the same scale or your `.features` labels will disagree with training (and metrics like `Val MAE cp` can look absurdly large).
+
+**Sanity check:** with cp clipped to ±2000 and `--cp-target-scale S`, each stored float should be roughly in `[-2000/S, 2000/S]`. If `train_nnue.py` prints `Target range: [-2000, 2000]` while YAML has `S=100`, your shards were built with scale 1 (or the wrong files).
+
+**Throughput:** raw `.features` vs `.features.zst` is not universally “slower” or “faster”—it depends on disk bandwidth vs decompression CPU, `num_workers`, and device. **Verify labels first** before attributing batch speed to compression alone.
 
 ## 3) Point config at `.features` data
 
@@ -136,11 +156,17 @@ caffeinate -i python3 trainer/split_data.py \
 caffeinate -i python3 trainer/convert_eval_to_features.py \
   --input trainer/localdata/lichess_db_eval.train.jsonl.zst \
   --output trainer/localdata/lichess_db_eval.train.features.zst \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 1000000
 
 caffeinate -i python3 trainer/convert_eval_to_features.py \
   --input trainer/localdata/lichess_db_eval.val.1M.jsonl.zst \
   --output trainer/localdata/lichess_db_eval.val.1M.features.zst \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 200000
 
 caffeinate -i python3 trainer/train_nnue.py --config trainer/config_nnue.yaml
@@ -160,6 +186,9 @@ caffeinate -i python3 trainer/convert_eval_to_features.py \
   --shards trainer/localdata/lichess_db_eval.train.features_shards \
   --num-shards 200 \
   --ingest-buffer-mb 1536 \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 1000000
 
 caffeinate -i python3 trainer/convert_eval_to_features.py \
@@ -167,6 +196,9 @@ caffeinate -i python3 trainer/convert_eval_to_features.py \
   --shards trainer/localdata/lichess_db_eval.val.1M.features_shards \
   --num-shards 1 \
   --ingest-buffer-mb 512 \
+  --cp-label-clip-min -2000 \
+  --cp-label-clip-max 2000 \
+  --cp-target-scale 100 \
   --progress-every 200000
 ```
 

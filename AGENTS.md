@@ -55,3 +55,12 @@ flake8 --max-line-length=150 --exclude=lichess-bot,trainer/localdata chess_game/
 - Syzygy endgame tablebases and NNUE training data are optional; the engine works without them.
 - The opening book (`opening_book.txt`, ~29MB) loads automatically on engine init.
 - `torch` is a heavy dependency (~2GB) required for the NNUE trainer; it is listed in `requirements.txt`.
+
+### NNUE trainer pitfalls (agents)
+
+When helping with `trainer/train_nnue.py` or `trainer/convert_eval_to_features.py`, prefer **verification** over a single-cause story (especially for batch speed).
+
+- **Converter does not read `trainer/config_nnue.yaml`.** `convert_eval_to_features.py` uses CLI flags and its own defaults only. Editing `nnue.cp_target_scale` or `cp_label_clip_*` in YAML does **not** change `.features` until you reconvert with matching `--cp-target-scale` / `--cp-label-clip-*` (or align defaults). The converter prints effective scaling at startup and warns if it disagrees with the YAML.
+- **Check stored targets before explaining throughput.** With `cp_target_scale = S` and cp clipped to ±2000, each stored regression target should be roughly in `[-2000/S, 2000/S]` (e.g. ±20 for `S=100`). If training’s “Testing data loading” shows `Target range: [-2000, 2000]` while YAML says `S=100`, the shards were built with the wrong scale (or wrong files).
+- **`Val MAE cp` (only when `regression_loss` is `win_prob_bce`).** It is mean absolute error in **centipawns** after rescaling in `trainer/nnue_trainer.py` `validate()`. Values far above ~2× the clip (e.g. tens of thousands) usually mean **label/config mismatch**, not a useless model.
+- **Batch speed vs `.features` vs `.features.zst`.** Do not assert that compression or lack of it is the bottleneck without measurement. Zstd can be faster or slower than raw reads depending on disk vs CPU; `num_workers`, device, and bad labels can dominate. Order of reasoning: **correct pipeline and targets → then** I/O or profiling.
