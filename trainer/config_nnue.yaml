@@ -1,0 +1,101 @@
+# NNUE Configuration for Chess Position Evaluation
+# Optimized for simple, fast training with piece-square table features
+
+model:
+  # NNUE architecture parameters
+  hidden_sizes: [1024, 128, 32]   # Hidden layer sizes (one per layer). First layer: 256, Second layer: 32
+  dropout: 0.1             # Dropout rate (0.0 to 1.0)
+
+training:
+  # Training hyperparameters
+  batch_size: 256                   # Training batch size (increased for NNUE)
+  learning_rate: 0.00005             # Initial learning rate (reduced for stability)
+  weight_decay: 0.0002             # L2 regularization strength
+  num_epochs: 50                   # Maximum number of training epochs
+  save_every: 5                    # Save checkpoint every N epochs
+  save_every_batches: 100000       # Save checkpoint every N batches (None to disable)
+  validate_every_batches: 100000  # Validate every N batches (None to disable, still validates at end of each epoch)
+  probe_every_batches: 100000      # Probe model every N batches
+  early_stopping_patience: 10     # Stop training if no improvement for N epochs
+  optimizer: "adamw"               # Optimizer type: 'adam', 'adamw', or 'sgd'
+  betas: [0.9, 0.999]             # Beta parameters for Adam optimizer
+  gradient_clip_norm: 5.0         # Maximum gradient norm for clipping
+  show_learning_curve: true       # Plot train/val loss after each validation (needs matplotlib; disable for headless)
+  scheduler: "step"               # Learning rate scheduler type: 'step', 'plateau', 'cosine', 'exponential'
+  # For 'step' scheduler:
+  step_size: 15                   # Step size for step scheduler (epochs, if step_size_batches not set)
+  step_size_batches: 2000000     # Step size in batches for batch-based LR scheduling (None to use epoch-based)
+  gamma: 0.5                      # Learning rate decay factor (for step/exponential schedulers)
+  # For 'plateau' scheduler (recommended for large datasets - adapts automatically):
+  # factor: 0.5                    # Factor to reduce LR by (default: 0.5)
+  # patience: 5                    # Number of epochs with no improvement before reducing LR (default: 5)
+  # min_lr: 1e-6                   # Minimum learning rate (default: 1e-6)
+  # For 'cosine' scheduler:
+  # T_max: 50                      # Maximum number of iterations (epochs or batches)
+  # eta_min: 0                     # Minimum learning rate (default: 0)
+  
+data:
+  # Data loading parameters (full pipeline: trainer/README.md — run commands from repo root).
+  # train_file may be a single .features / .features.zst file or a directory of shard_*.features(.zst)
+  # (see trainer/convert_eval_to_features.py --shards / --num-shards).
+  # train_file: "trainer/localdata/lichess_db_eval.train.jsonl.zst"  # Path to the training data file
+  # train_file: "trainer/localdata/lichess_db_eval.train.features.zst"  # Path to the training data file
+  train_file: "trainer/localdata/lichess_db_eval.train.features_shards"  # Path to the training data file
+  # val_file: "trainer/localdata/lichess_db_eval.val.1M.jsonl.zst"      # Path to the validation data file
+  # val_file: "trainer/localdata/lichess_db_eval.val.1M.features.zst"      # Path to the validation data file
+  val_file: "trainer/localdata/lichess_db_eval.val.1M.features_shards/shard_000.features"      # Path to the validation data file
+  max_train_positions: 1000000000    # Maximum number of training positions (1M)
+  max_val_positions: 500000       # Use only the first N validation examples (None to use entire file)
+  num_workers: 0                  # Number of data loading workers
+  pin_memory: true                # Pin memory for faster GPU transfer
+
+hardware:
+  # Hardware configuration
+  device: "auto"                  # Device to use ('auto', 'cpu', 'cuda', 'mps')
+  mixed_precision: false          # Use mixed precision training (not needed for NNUE)
+
+paths:
+  # File paths
+  save_dir: "checkpoints_nnue"    # Directory to save model checkpoints
+  log_dir: "logs_nnue"            # Directory to save training logs
+
+# NNUE-specific settings
+nnue:
+  objective: "cp_regression"      # White-perspective cp regression (mate rows skipped in data)
+  input_size: 783                 # 768 piece-square + 4 castling + 10 piece counts + 1 side-to-move
+  output_size: 1                  # Single scalar (network predicts clamp(cp)/cp_target_scale)
+  feature_extractor: "piece_square_tables"
+  # Label clamp before loss (reduces outlier gradient domination)
+  cp_label_clip_min: -2000.0
+  cp_label_clip_max: 2000.0
+  # Training target = clamp(cp) / cp_target_scale; inference multiplies model output by this (1.0 = predict cp directly)
+  cp_target_scale: 100.0
+  # Loss: smooth_l1 (Huber), mse, or win_prob_bce (BCE on sigma(cp/s); native cp head)
+  regression_loss: "win_prob_bce"
+  huber_beta: 100.0               # SmoothL1 beta (target tensor units); unused for win_prob_bce
+  # s in p = sigma(cp/s); ~400 keeps cp→p nearly linear for the first ±~100 cp (real centipawns)
+  win_prob_scale: 400.0
+  # Optional cp-space regularizer on top of win_prob_bce to discourage extreme absolute eval drift.
+  cp_regularization_weight: 0.001
+  cp_regularization_loss: "smooth_l1"
+  cp_regularization_beta: 100.0   # SmoothL1 beta in real centipawn units
+  balanced_eval_threshold_cp: 100.0  # Validation slice reported for |target_cp| <= threshold
+
+# Debugging and monitoring
+debug:
+  print_every_batches: 100        # Print training progress every N batches
+  validate_every_epochs: 1         # Run validation every N epochs
+  save_predictions: false         # Save model predictions for analysis
+  log_feature_stats: false        # Log feature statistics during training
+
+# Model evaluation
+evaluation:
+  # Evaluation settings
+  test_positions: [
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",  # Starting position
+    "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",  # After 1.e4
+    "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2"   # After 1.e4 e5
+  ]
+  expected_evaluations: [0, 20, 0]  # Expected evaluations for test positions (centipawns)
+  
+description: "NNUE: White-oriented features, cp head, clamped labels; default loss win_prob_bce (soft BCE on win prob). Also supports SmoothL1/MSE."
